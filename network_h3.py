@@ -9,16 +9,19 @@ I want to look at a test case in Radford City and Montgomery County, Virginia to
 
 from __future__ import annotations
 import os
+import sys
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union, Set
 
 import geopandas as gpd
 import networkx as nx
 import numpy as np
 import osmnx as ox
-from shapely.geometry import Point, Polygon, mapping
+from shapely.geometry import Point, Polygon, mapping, MultiPolygon
 from shapely.ops import unary_union
 import h3
+from h3 import LatLngMultiPoly, LatLngPoly
+
 
 from ccaoa import core as cf, raccoon as rc, gis
 
@@ -28,7 +31,7 @@ class StudyArea:
     polygon_wgs84: Polygon  # EPSG:4326
 
 
-def get_study_area_radford_montgomery() -> StudyArea:
+def get_study_area_radford_montgomery(output_osm_test: bool = False) -> StudyArea:
     """
     Fetch admin boundaries for Radford City, VA and Montgomery County, VA, union them,
     and return as a single polygon (WGS84).
@@ -36,6 +39,9 @@ def get_study_area_radford_montgomery() -> StudyArea:
     # OSMnx geocoding returns a GeoDataFrame in EPSG:4326
     gdf_radford = ox.geocode_to_gdf("Radford, Virginia, USA")
     gdf_monty = ox.geocode_to_gdf("Montgomery County, Virginia, USA")
+    if cf.string_to_bool(output_osm_test):
+        gis.gdf_to_file(gdf_radford, os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),"radford_osm.geojson"))
+        gis.gdf_to_file(gdf_monty, os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),"moco_osm.geojson"))
 
     geom = unary_union([gdf_radford.geometry.iloc[0], gdf_monty.geometry.iloc[0]])
     if geom.geom_type == "MultiPolygon":
@@ -66,15 +72,38 @@ def download_osm_graph_drive(polygon_wgs84: Polygon) -> nx.MultiDiGraph:
     return G
 
 
-def _polygon_to_h3_cells(polygon_wgs84: Polygon, h3_res: int) -> List[str]:
+def _ring_lnglat_to_latlng(ring_lnglat: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
     """
-    Convert a shapely Polygon (EPSG:4326) to a list of H3 cell IDs covering it.
+    Convert a Shapely ring coordinate sequence from (lng, lat) to (lat, lng),
+    dropping the duplicated closing coordinate if present.
     """
-    # h3.polygon_to_cells expects a GeoJSON-like dict with coordinates in lon/lat order
-    geojson = mapping(polygon_wgs84)
-    cells = list(h3.polygon_to_cells(geojson, h3_res))
-    return cells
+    coords = list(ring_lnglat)
+    if len(coords) >= 2 and coords[0] == coords[-1]:
+        coords = coords[:-1]
+    # shapely gives (x=lng, y=lat) -> h3 wants (lat, lng)
+    return [(lat, lng) for (lng, lat) in coords]
 
+
+def _shapely_polygon_to_latlngpoly(poly: Polygon) -> LatLngPoly:
+    outer = _ring_lnglat_to_latlng(poly.exterior.coords)
+    holes = [_ring_lnglat_to_latlng(ring.coords) for ring in poly.interiors]
+    return LatLngPoly(outer, holes)
+
+
+def _polygon_to_h3_cells(geom_wgs84: Union[Polygon, MultiPolygon], h3_res: int) -> List[str]:
+    """
+    Convert a Shapely Polygon or MultiPolygon (EPSG:4326) to H3 cells covering it.
+    """
+    if isinstance(geom_wgs84, Polygon):
+        shape = _shapely_polygon_to_latlngpoly(geom_wgs84)
+        return list(h3.h3shape_to_cells(shape, h3_res))
+
+    if isinstance(geom_wgs84, MultiPolygon):
+        polys = [_shapely_polygon_to_latlngpoly(p) for p in geom_wgs84.geoms]
+        shape = LatLngMultiPoly(polys)
+        return list(h3.h3shape_to_cells(shape, h3_res))
+
+    raise TypeError(f"Expected Polygon or MultiPolygon, got {type(geom_wgs84)}")
 
 def build_h3_grid_gdf(polygon_wgs84: Polygon, h3_res: int) -> gpd.GeoDataFrame:
     """
@@ -279,14 +308,15 @@ def assign_nearest_target_by_h3_network(
 def demo_radford_montgomery_pipeline(
     *,
     h3_res: int = 8,
+    test_outs: bool = False
 ) -> Tuple[StudyArea, nx.MultiDiGraph, nx.Graph, gpd.GeoDataFrame]:
     """
     Convenience function to build everything for the Radford + Montgomery test case.
     """
-    area = get_study_area_radford_montgomery()
+    area = get_study_area_radford_montgomery(output_osm_test=test_outs)
     G_osm = download_osm_graph_drive(area.polygon_wgs84)
     H_h3 = build_h3_travel_graph_from_osm(G_osm, h3_res=h3_res, weight_attr="travel_time", agg="min")
-    h3_grid = build_h3_grid_gdf(area.polygon_wgs84, h3_res=h3_res)
+    h3_grid: gpd.GeoDataFrame = build_h3_grid_gdf(area.polygon_wgs84, h3_res=h3_res)
     return area, G_osm, H_h3, h3_grid
 
 
@@ -295,7 +325,15 @@ if __name__ == "__main__":
     ox.settings.use_cache = True
     ox.settings.log_console = True
 
-    area, G_osm, H_h3, h3_grid = demo_radford_montgomery_pipeline(h3_res=8)
+    area, G_osm, H_h3, h3_grid = demo_radford_montgomery_pipeline(h3_res=8, test_outs=True)  # Returns StudyArea, nx.MultiDiGraph, nx.Graph, gpd.GeoDataFrame
+
+    print(area)
+    print(G_osm)
+    print(H_h3)
+    print(h3_grid)
+    gis.gdf_to_file(h3_grid,os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),"mocorad_h3_grid.geojson"), overwrite=False)
+    sys.exit()
+    print()
 
     # Synthetic example points
     src_points = gpd.GeoDataFrame(
