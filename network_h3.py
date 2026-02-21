@@ -40,8 +40,8 @@ def get_study_area_radford_montgomery(output_osm_test: bool = False) -> StudyAre
     gdf_radford = ox.geocode_to_gdf("Radford, Virginia, USA")
     gdf_monty = ox.geocode_to_gdf("Montgomery County, Virginia, USA")
     if cf.string_to_bool(output_osm_test):
-        gis.gdf_to_file(gdf_radford, os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),"radford_osm.geojson"))
-        gis.gdf_to_file(gdf_monty, os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),"moco_osm.geojson"))
+        gis.gdf_to_file(gdf_radford, os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),"radford_osm.geojson"), overwrite=True)
+        gis.gdf_to_file(gdf_monty, os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),"moco_osm.geojson"), overwrite=True)
 
     geom = unary_union([gdf_radford.geometry.iloc[0], gdf_monty.geometry.iloc[0]])
     if geom.geom_type == "MultiPolygon":
@@ -199,6 +199,38 @@ def _ensure_wgs84_points(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     return gdf.to_crs("EPSG:4326")
 
 
+def snap_cell_to_graph(
+    cell: str,
+    graph_nodes: Set[str],
+    *,
+    max_k: int = 10,
+) -> Optional[str]:
+    """
+    If cell is not in graph_nodes, expand k-rings (grid_disk) until a cell is found that is.
+    Returns the snapped cell, or None if not found within max_k.
+    Deterministic: searches k=0..max_k and returns the first found in that ring.
+    """
+    if cell in graph_nodes:
+        return cell
+
+    for k in range(1, max_k + 1):
+        # disk includes all cells within distance k (including inner rings)
+        # To keep deterministic preference for nearer cells, we filter to exactly the ring k.
+        ring = h3.grid_ring(cell, k)
+        # grid_ring can fail near pentagons; fall back to disk difference
+        if not ring:
+            disk = set(h3.grid_disk(cell, k))
+            inner = set(h3.grid_disk(cell, k - 1))
+            ring = list(disk - inner)
+
+        # Deterministic ordering: sort cell ids lexicographically
+        for cand in sorted(ring):
+            if cand in graph_nodes:
+                return cand
+
+    return None
+
+
 def assign_nearest_target_by_h3_network(
     source_points: gpd.GeoDataFrame,
     target_points: gpd.GeoDataFrame,
@@ -242,10 +274,18 @@ def assign_nearest_target_by_h3_network(
 
     tgt["h3_cell"] = tgt_cells
     tgt = tgt.dropna(subset=["h3_cell"]).copy()
+    graph_nodes: set[str] = set(h3_graph.nodes)
 
-    # Build dict: cell -> list of target rows (indices)
+    # Snap target cells into the graph
+    tgt["h3_cell_graph"] = tgt["h3_cell"].apply(
+        lambda c: snap_cell_to_graph(c, graph_nodes, max_k=10)
+    )
+
+    # Drop any targets that could not be snapped
+    tgt = tgt.dropna(subset=["h3_cell_graph"]).copy()
+
     cell_to_target_idx: Dict[str, List[int]] = {}
-    for idx, cell in zip(tgt.index.tolist(), tgt["h3_cell"].tolist()):
+    for idx, cell in zip(tgt.index.tolist(), tgt["h3_cell_graph"].tolist()):
         cell_to_target_idx.setdefault(cell, []).append(idx)
 
     if len(cell_to_target_idx) == 0:
@@ -275,13 +315,15 @@ def assign_nearest_target_by_h3_network(
 
         s_cell = h3.latlng_to_cell(geom.y, geom.x, h3_res)
 
-        # If cell not reachable in H3 graph, no assignment
-        if s_cell not in paths:
+        # Snap source cell into graph
+        s_cell_graph = snap_cell_to_graph(s_cell, graph_nodes, max_k=10)
+
+        if s_cell_graph is None or s_cell_graph not in paths:
             chosen_ids.append(None)
             continue
 
         # Nearest target cell is the last element in the returned path
-        nearest_cell = paths[s_cell][-1]
+        nearest_cell = paths[s_cell_graph][-1]
         candidate_idxs = cell_to_target_idx.get(nearest_cell, [])
         if not candidate_idxs:
             chosen_ids.append(None)
@@ -325,14 +367,15 @@ if __name__ == "__main__":
     ox.settings.use_cache = True
     ox.settings.log_console = True
 
-    area, G_osm, H_h3, h3_grid = demo_radford_montgomery_pipeline(h3_res=8, test_outs=True)  # Returns StudyArea, nx.MultiDiGraph, nx.Graph, gpd.GeoDataFrame
+    output_tests: bool = False
+    area, G_osm, H_h3, h3_grid = demo_radford_montgomery_pipeline(h3_res=8, test_outs=output_tests)  # Returns StudyArea, nx.MultiDiGraph, nx.Graph, gpd.GeoDataFrame
 
     print(area)
     print(G_osm)
     print(H_h3)
     print(h3_grid)
-    gis.gdf_to_file(h3_grid,os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),"mocorad_h3_grid.geojson"), overwrite=False)
-    sys.exit()
+    if output_tests:
+        gis.gdf_to_file(h3_grid,os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),"mocorad_h3_grid.geojson"), overwrite=True)
     print()
 
     # Synthetic example points
