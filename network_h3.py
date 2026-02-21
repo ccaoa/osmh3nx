@@ -291,6 +291,14 @@ def assign_nearest_target_by_h3_network(
     if len(cell_to_target_idx) == 0:
         raise ValueError("No valid target points after mapping to H3 cells.")
 
+    # Pre-Dijkstra diagnostics
+    print("H3 graph nodes:", h3_graph.number_of_nodes())
+    print("H3 graph edges:", h3_graph.number_of_edges())
+    print("Unique target cells (snapped):", len(cell_to_target_idx))
+    # How many target cells are actually nodes (should be all)
+    missing_sources = [c for c in cell_to_target_idx.keys() if c not in h3_graph]
+    print("Missing target source nodes (should be 0):", len(missing_sources))
+
     # Multi-source Dijkstra
     # distances[cell] = best travel time to nearest target cell
     # paths[cell] = path of cells from cell to the nearest target cell (includes both ends)
@@ -299,6 +307,7 @@ def assign_nearest_target_by_h3_network(
         sources=list(cell_to_target_idx.keys()),
         weight=weight_attr,
     )
+    print("Dijkstra reached nodes:", len(distances))
 
     # Prepare projected versions for tie-breaking by Euclidean distance
     src_proj = src.to_crs(tie_break_project_crs)
@@ -318,12 +327,22 @@ def assign_nearest_target_by_h3_network(
         # Snap source cell into graph
         s_cell_graph = snap_cell_to_graph(s_cell, graph_nodes, max_k=10)
 
+        # Diagnostics
+        if i < 10:
+            print(
+                "src", i,
+                "cell", s_cell,
+                "snapped", s_cell_graph,
+                "snapped_in_graph", (s_cell_graph in h3_graph) if s_cell_graph else None,
+                "snapped_in_paths", (s_cell_graph in paths) if s_cell_graph else None,
+            )
+
         if s_cell_graph is None or s_cell_graph not in paths:
             chosen_ids.append(None)
             continue
 
         # Nearest target cell is the last element in the returned path
-        nearest_cell = paths[s_cell_graph][-1]
+        nearest_cell = paths[s_cell_graph][0]
         candidate_idxs = cell_to_target_idx.get(nearest_cell, [])
         if not candidate_idxs:
             chosen_ids.append(None)
@@ -377,6 +396,9 @@ if __name__ == "__main__":
     if output_tests:
         gis.gdf_to_file(h3_grid,os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),"mocorad_h3_grid.geojson"), overwrite=True)
     print()
+    print("Connected components:", nx.number_connected_components(H_h3))
+    sizes = sorted((len(c) for c in nx.connected_components(H_h3)), reverse=True)
+    print("Largest components:", sizes[:10])
 
     # Synthetic example points
     src_points = gpd.GeoDataFrame(
