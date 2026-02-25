@@ -12,12 +12,13 @@ import os
 import sys
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union, Set
+import warnings
 
 import geopandas as gpd
 import networkx as nx
 import numpy as np
 import osmnx as ox
-from shapely.geometry import Point, Polygon, mapping, MultiPolygon
+from shapely.geometry import Point, Polygon, LineString, MultiPolygon
 from shapely.ops import unary_union
 import h3
 from h3 import LatLngMultiPoly, LatLngPoly
@@ -231,6 +232,13 @@ def snap_cell_to_graph(
     return None
 
 
+def h3_path_to_linestring(path_cells: List[str]) -> LineString:
+    coords = []
+    for c in path_cells:
+        lat, lng = h3.cell_to_latlng(c)
+        coords.append((lng, lat))  # shapely x,y
+    return LineString(coords)
+
 def assign_nearest_target_by_h3_network(
     source_points: gpd.GeoDataFrame,
     target_points: gpd.GeoDataFrame,
@@ -241,6 +249,8 @@ def assign_nearest_target_by_h3_network(
     h3_res: int,
     weight_attr: str = "travel_time",
     tie_break_project_crs: str = "EPSG:3857",
+    out_path_col: Optional[str] = "h3_path",
+    out_time_col: Optional[str] = "h3_travel_time"
 ) -> gpd.GeoDataFrame:
     """
     For each source point, find the closest target point by network travel time on the H3 graph,
@@ -308,6 +318,8 @@ def assign_nearest_target_by_h3_network(
         weight=weight_attr,
     )
     print("Dijkstra reached nodes:", len(distances))
+    if len(distances) != h3_graph.number_of_nodes():
+        warnings.warn("Warning: Dijkstra did not reach all nodes. Graph may be disconnected.")
 
     # Prepare projected versions for tie-breaking by Euclidean distance
     src_proj = src.to_crs(tie_break_project_crs)
@@ -341,7 +353,16 @@ def assign_nearest_target_by_h3_network(
             chosen_ids.append(None)
             continue
 
-        # Nearest target cell is the last element in the returned path
+        # Also get the path that was taken to get to the destination
+        path_cells: list[str] = paths[s_cell_graph]
+        travel_time = float(distances[s_cell_graph])
+        if out_path_col is not None:
+            # list is fine, but you can also do "|".join(path_cells)
+            src.loc[src.index[i], out_path_col] = "|".join(path_cells)
+        if out_time_col is not None:
+            src.loc[src.index[i], out_time_col] = travel_time
+
+        # Nearest target cell is the first element in the returned path
         nearest_cell = paths[s_cell_graph][0]
         candidate_idxs = cell_to_target_idx.get(nearest_cell, [])
         if not candidate_idxs:
@@ -380,7 +401,53 @@ def demo_radford_montgomery_pipeline(
     h3_grid: gpd.GeoDataFrame = build_h3_grid_gdf(area.polygon_wgs84, h3_res=h3_res)
     return area, G_osm, H_h3, h3_grid
 
+def build_route_gdf_from_assignment(
+    assigned_src: gpd.GeoDataFrame,
+    *,
+    src_id_col: str,
+    path_col: str = "h3_path",
+    time_col: str = "h3_travel_time",
+    target_id_col: str = "nearest_tgt_id",
+) -> gpd.GeoDataFrame:
+    rows: list[dict[str, Any]] = []
 
+    for _, r in assigned_src.iterrows():
+        p = r.get(path_col)
+        if p is None or (isinstance(p, float) and np.isnan(p)):
+            continue
+        if not isinstance(p, str) or not p.strip():
+            continue
+
+        cells = p.split("|")
+        geom = h3_path_to_linestring(cells)
+
+        rows.append(
+            {
+                src_id_col: r.get(src_id_col),
+                target_id_col: r.get(target_id_col),
+                time_col: r.get(time_col),
+                "n_cells": len(cells),
+                "geometry": geom,
+            }
+        )
+
+    return gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
+
+
+def explode_paths_to_h3_cells(
+    assigned_src: gpd.GeoDataFrame,
+    *,
+    src_id_col: str,
+    path_col: str = "h3_path",
+) -> gpd.GeoDataFrame:
+    rows: list[dict[str, Any]] = []
+    for _, r in assigned_src.iterrows():
+        p = r.get(path_col)
+        if not isinstance(p, str) or not p.strip():
+            continue
+        for step, cell in enumerate(p.split("|")):
+            rows.append({src_id_col: r.get(src_id_col), "step": step, "h3_cell": cell})
+    return gpd.GeoDataFrame(rows)
 # Example usage (replace these with your real point layers):
 if __name__ == "__main__":
     ox.settings.use_cache = True
@@ -413,7 +480,8 @@ if __name__ == "__main__":
         crs="EPSG:4326",
     )
 
-    out = assign_nearest_target_by_h3_network(
+    pathcol = "h3_path"
+    out: gpd.GeoDataFrame = assign_nearest_target_by_h3_network(
         src_points,
         tgt_points,
         target_id_col="tgt_id",
@@ -421,9 +489,50 @@ if __name__ == "__main__":
         h3_graph=H_h3,
         h3_res=8,
         weight_attr="travel_time",
+        out_path_col=pathcol
     )
 
+    # Try to visualize the path taken here
+    distinct_paths = out[pathcol].dropna().unique().tolist()
+    for dp in distinct_paths:
+        cells = dp.split("|")
+        line = h3_path_to_linestring(cells)
+        print(line)
+
+    # Output the routes to GDF
+    routes = build_route_gdf_from_assignment(
+        out,
+        src_id_col="src_id",
+        path_col="h3_path",
+        time_col="h3_travel_time",
+        target_id_col="nearest_tgt_id",
+    )
+    # Get the actual h3 cells used for route
+    path_cells = explode_paths_to_h3_cells(out, src_id_col="src_id", path_col="h3_path")
+    path_hexes = path_cells.merge(h3_grid, on="h3_cell", how="left")
+    path_hexes = gpd.GeoDataFrame(path_hexes, geometry="geometry", crs=h3_grid.crs)
+
+    export = False
+    if export:
+        # XPRT
+        runtry = 1
+
+        routes.to_file(
+            os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),
+                         f"h3_routes_{str(runtry)}.geojson"),
+            driver="GeoJSON",
+        )
+        path_hexes.to_file(
+            os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),
+                         f"h3_path_hexes_{str(runtry)}.geojson"),
+           driver="GeoJSON",
+     )
+        gis.gdf_to_file(out,os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),
+                         f"outtestresult_{str(runtry)}.geojson"))
+
     print(out[["src_id", "nearest_tgt_id"]])
+
+    # return out
 
 """
 What you will probably want to improve next (but this is enough to start testing)
