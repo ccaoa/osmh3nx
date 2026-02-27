@@ -14,12 +14,13 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union, Set
 import warnings
 
-import geopandas as gpd
 import networkx as nx
-import numpy as np
+import numpy as np, pandas as pd
 import osmnx as ox
 from shapely.geometry import Point, Polygon, LineString, MultiPolygon
 from shapely.ops import unary_union
+import pyproj
+import geopandas as gpd
 import h3
 from h3 import LatLngMultiPoly, LatLngPoly
 
@@ -128,65 +129,107 @@ def build_h3_travel_graph_from_osm(
     h3_res: int,
     *,
     weight_attr: str = "travel_time",
-    agg: str = "min",
+    sample_meters: float = 100.0,
+    combine_parallel: str = "min",
 ) -> nx.Graph:
     """
-    Collapse an OSMnx street graph into an H3-level undirected graph where nodes are H3 cells and
-    edges connect cells that have at least one OSM edge between them.
+    Build an H3-level undirected travel graph by sampling along each OSM edge geometry.
 
-    Edge weight is an aggregation (min/sum/mean) of OSM edge weights between those two cells.
+    Key differences vs endpoint-only:
+      - Samples points along each edge every sample_meters (in a projected CRS)
+      - Converts sampled points to H3 cells
+      - Connects successive cells, splitting edge travel_time across the steps
 
-    This is an approximation:
-      - Each OSM node is mapped to an H3 cell at the given resolution.
-      - Each OSM edge becomes a connection between the origin cell and destination cell.
-      - Multiple road segments between the same pair of cells are aggregated.
-
-    Returns an undirected graph, appropriate for travel time computations.
+    combine_parallel:
+      - "min" keeps the smallest travel_time for an H3 adjacency across multiple roads
+      - "mean" averages (usually not recommended for fastest-path travel times)
     """
-    if agg not in {"min", "sum", "mean"}:
-        raise ValueError("agg must be one of: 'min', 'sum', 'mean'")
+    if combine_parallel not in {"min", "mean"}:
+        raise ValueError("combine_parallel must be one of: 'min', 'mean'")
 
-    # Map OSM node -> H3 cell
-    node_to_cell: Dict[Any, str] = {}
-    for n, data in G_osm.nodes(data=True):
-        lat = data.get("y", None)
-        lng = data.get("x", None)
-        if lat is None or lng is None:
-            continue
-        node_to_cell[n] = h3.latlng_to_cell(lat, lng, h3_res)
+    # Project graph to a metric CRS so sampling is in meters
+    Gp = ox.project_graph(G_osm)
+    crs_proj = Gp.graph.get("crs")
+    if crs_proj is None:
+        raise ValueError("Projected graph is missing CRS.")
 
-    # Collect weights between cell pairs
-    # Use sorted tuple (a, b) so we can build an undirected representation
-    cellpair_to_weights: Dict[Tuple[str, str], List[float]] = {}
+    to_wgs84 = pyproj.Transformer.from_crs(crs_proj, "EPSG:4326", always_xy=True)
 
-    for u, v, k, data in G_osm.edges(keys=True, data=True):
-        cu = node_to_cell.get(u)
-        cv = node_to_cell.get(v)
-        if cu is None or cv is None or cu == cv:
-            continue
+    # We will build edges in an undirected graph with travel_time weights in seconds
+    H = nx.Graph()
 
+    def _edge_linestring(u: Any, v: Any, data: Dict[str, Any]) -> LineString:
+        geom = data.get("geometry")
+        if geom is not None and not geom.is_empty:
+            return geom
+
+        # fallback: straight line between node coordinates (in projected CRS)
+        ux = Gp.nodes[u].get("x")
+        uy = Gp.nodes[u].get("y")
+        vx = Gp.nodes[v].get("x")
+        vy = Gp.nodes[v].get("y")
+        if ux is None or uy is None or vx is None or vy is None:
+            raise ValueError("Missing node coordinates for edge geometry fallback.")
+        return LineString([(ux, uy), (vx, vy)])
+
+    def _h3_cell_from_xy(x: float, y: float) -> str:
+        lng, lat = to_wgs84.transform(x, y)
+        return h3.latlng_to_cell(lat, lng, h3_res)
+
+    # Temporary store for parallel edge combining
+    # key: (a, b) sorted -> list of candidate weights (seconds)
+    pair_to_weights: Dict[Tuple[str, str], List[float]] = {}
+
+    for u, v, k, data in Gp.edges(keys=True, data=True):
         w = data.get(weight_attr)
         if w is None:
             continue
 
         try:
-            w_float = float(w)
+            edge_time = float(w)
         except Exception:
             continue
 
-        a, b = (cu, cv) if cu < cv else (cv, cu)
-        cellpair_to_weights.setdefault((a, b), []).append(w_float)
+        line = _edge_linestring(u, v, data)
+        length_m = float(data.get("length") or line.length)
+        if length_m <= 0:
+            continue
 
-    # Build H3 graph
-    H = nx.Graph()
-    for (a, b), weights in cellpair_to_weights.items():
-        if agg == "min":
-            w_out = float(np.min(weights))
-        elif agg == "sum":
-            w_out = float(np.sum(weights))
+        # Number of segments based on sampling resolution
+        n_segs = int(np.ceil(length_m / float(sample_meters)))
+        n_segs = max(n_segs, 1)
+
+        # Sample along the line at segment boundaries
+        dists = np.linspace(0.0, length_m, n_segs + 1)
+
+        # Convert sampled points to H3 cells, dedupe consecutive repeats
+        cells: List[str] = []
+        last: Optional[str] = None
+        for d in dists:
+            pt = line.interpolate(d)
+            c = _h3_cell_from_xy(float(pt.x), float(pt.y))
+            if c != last:
+                cells.append(c)
+                last = c
+
+        if len(cells) < 2:
+            continue
+
+        # Split edge_time across steps between successive cells
+        step_time = edge_time / float(len(cells) - 1)
+
+        for a, b in zip(cells[:-1], cells[1:]):
+            if a == b:
+                continue
+            x, y = (a, b) if a < b else (b, a)
+            pair_to_weights.setdefault((x, y), []).append(step_time)
+
+    # Combine parallel weights into final graph edges
+    for (a, b), ws in pair_to_weights.items():
+        if combine_parallel == "min":
+            w_out = float(np.min(ws))
         else:
-            w_out = float(np.mean(weights))
-
+            w_out = float(np.mean(ws))
         H.add_edge(a, b, **{weight_attr: w_out})
 
     return H
@@ -238,6 +281,7 @@ def h3_path_to_linestring(path_cells: List[str]) -> LineString:
         lat, lng = h3.cell_to_latlng(c)
         coords.append((lng, lat))  # shapely x,y
     return LineString(coords)
+
 
 def assign_nearest_target_by_h3_network(
     source_points: gpd.GeoDataFrame,
@@ -353,9 +397,21 @@ def assign_nearest_target_by_h3_network(
             chosen_ids.append(None)
             continue
 
+        # Test prints
+        if i < 10:
+            print("path length cells:", len(paths[s_cell_graph]))
+            print("travel_time (seconds):", float(distances[s_cell_graph]))
+
         # Also get the path that was taken to get to the destination
         path_cells: list[str] = paths[s_cell_graph]
         travel_time = float(distances[s_cell_graph])
+        if i == 1:  # or i < 2
+            path_cells = paths[s_cell_graph]
+            wts = []
+            for a, b in zip(path_cells[:-1], path_cells[1:]):
+                wts.append(h3_graph[a][b][weight_attr])
+            print("route edge weights:", wts)
+            print("sum route edge weights:", float(sum(wts)))
         if out_path_col is not None:
             # list is fine, but you can also do "|".join(path_cells)
             src.loc[src.index[i], out_path_col] = "|".join(path_cells)
@@ -397,9 +453,18 @@ def demo_radford_montgomery_pipeline(
     """
     area = get_study_area_radford_montgomery(output_osm_test=test_outs)
     G_osm = download_osm_graph_drive(area.polygon_wgs84)
-    H_h3 = build_h3_travel_graph_from_osm(G_osm, h3_res=h3_res, weight_attr="travel_time", agg="min")
+    H_h3 = build_h3_travel_graph_from_osm(G_osm, h3_res=h3_res, weight_attr="travel_time", combine_parallel="mean", sample_meters=30)
+    # TODO delete test prints; used for debugging
+    print("H_h3 nodes:", H_h3.number_of_nodes())
+    print("H_h3 edges:", H_h3.number_of_edges())
+    print("edge travel_time min/median/max:",
+          np.min([d["travel_time"] for _, _, d in H_h3.edges(data=True)]),
+          np.median([d["travel_time"] for _, _, d in H_h3.edges(data=True)]),
+          np.max([d["travel_time"] for _, _, d in H_h3.edges(data=True)]))
+    #
     h3_grid: gpd.GeoDataFrame = build_h3_grid_gdf(area.polygon_wgs84, h3_res=h3_res)
     return area, G_osm, H_h3, h3_grid
+
 
 def build_route_gdf_from_assignment(
     assigned_src: gpd.GeoDataFrame,
@@ -448,8 +513,13 @@ def explode_paths_to_h3_cells(
         for step, cell in enumerate(p.split("|")):
             rows.append({src_id_col: r.get(src_id_col), "step": step, "h3_cell": cell})
     return gpd.GeoDataFrame(rows)
+
+
 # Example usage (replace these with your real point layers):
 if __name__ == "__main__":
+    import time
+    start = time.time()
+
     ox.settings.use_cache = True
     ox.settings.log_console = True
 
@@ -512,26 +582,27 @@ if __name__ == "__main__":
     path_hexes = path_cells.merge(h3_grid, on="h3_cell", how="left")
     path_hexes = gpd.GeoDataFrame(path_hexes, geometry="geometry", crs=h3_grid.crs)
 
-    export = False
+    export = True
     if export:
         # XPRT
-        runtry = 1
+        runtry = 4
 
-        routes.to_file(
+        gis.gdf_to_file(routes,
             os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),
                          f"h3_routes_{str(runtry)}.geojson"),
-            driver="GeoJSON",
+            file_format=".geojson", overwrite=True
         )
-        path_hexes.to_file(
+        gis.gdf_to_file(path_hexes,
             os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),
                          f"h3_path_hexes_{str(runtry)}.geojson"),
-           driver="GeoJSON",
-     )
+                        file_format=".geojson", overwrite=True
+                        )
         gis.gdf_to_file(out,os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),
-                         f"outtestresult_{str(runtry)}.geojson"))
+                         f"outtestresult_{str(runtry)}.geojson"), overwrite=True)
 
     print(out[["src_id", "nearest_tgt_id"]])
 
+    cf.runtime(start)
     # return out
 
 """
