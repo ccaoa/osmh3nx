@@ -4,6 +4,12 @@ I have the most recent versions of the python packages h3, networkx, and osmnx d
 This is my inspiration. Please look at this link for an idea. I want to build something similar in python (the back-end processing, not necessarily the interactive map in a Jupyter type space, cool though that is).
 https://observablehq.com/@nrabinowitz/h3-travel-times
 
+# TODO Read these other sources
+#  - https://github.com/nmandery/rout3serv?tab=readme-ov-file & https://github.com/nmandery/rout3serv/blob/main/crates/rout3serv/README.md
+#  - Especially https://bytes.swiggy.com/the-osm-distance-service-part-1-evaluation-metrics-and-routing-configurations-6e8686ca814f
+#  - https://heigit.org/another-milestone-for-ohsomenow-h3-hexagon-maps-at-high-and-low-resolution/
+
+
 I want to look at a test case in Radford City and Montgomery County, Virginia to help begin to build this. Write me initial code that pulls OSM street data, h3 polygons at a county-appropriate scale, and a function that accepts two point geopandas datasets. The end goal is to see which point from one dataset is closest to the point in the other dataset by h3 network analysis. The unique ID of the compare dataset's closest point should be written to a new column in points from the source dataset.
 """
 
@@ -131,6 +137,10 @@ def build_h3_travel_graph_from_osm(
     weight_attr: str = "travel_time",
     sample_meters: float = 100.0,
     combine_parallel: str = "min",
+    enforce_min_step_time: bool = True,
+    v_max_kph: float = 60.0,
+    floor_speed_source: str = "vmax",
+    min_osm_speed_kph: float = 10.0,
 ) -> nx.Graph:
     """
     Build an H3-level undirected travel graph by sampling along each OSM edge geometry.
@@ -143,9 +153,26 @@ def build_h3_travel_graph_from_osm(
     combine_parallel:
       - "min" keeps the smallest travel_time for an H3 adjacency across multiple roads
       - "mean" averages (usually not recommended for fastest-path travel times)
+
+    enforce_min_step_time (Variant A):
+      - Applies a per-adjacency time floor based on H3 centroid distance:
+        min_time = centroid_distance_m / speed_mps
+        edge_time = max(observed_edge_time, min_time)
+
+    floor_speed_source:
+      - "vmax": speed_mps is derived from v_max_kph (strict minimum-time floor behavior)
+      - "osm_median": speed_mps is derived from the median OSM speed_kph observed for that
+        adjacency, clamped to [min_osm_speed_kph, v_max_kph]
+        (keeps OSM connectivity and introduces a local speed signal)
     """
     if combine_parallel not in {"min", "mean"}:
         raise ValueError("combine_parallel must be one of: 'min', 'mean'")
+    if floor_speed_source not in {"vmax", "osm_median"}:
+        raise ValueError("floor_speed_source must be one of: 'vmax', 'osm_median'")
+    if v_max_kph <= 0:
+        raise ValueError("v_max_kph must be > 0")
+    if min_osm_speed_kph <= 0:
+        raise ValueError("min_osm_speed_kph must be > 0")
 
     # Project graph to a metric CRS so sampling is in meters
     Gp = ox.project_graph(G_osm)
@@ -176,9 +203,43 @@ def build_h3_travel_graph_from_osm(
         lng, lat = to_wgs84.transform(x, y)
         return h3.latlng_to_cell(lat, lng, h3_res)
 
+    geod = pyproj.Geod(ellps="WGS84")
+
+    def _centroid_distance_m(cell_a: str, cell_b: str) -> float:
+        lat_a, lng_a = h3.cell_to_latlng(cell_a)
+        lat_b, lng_b = h3.cell_to_latlng(cell_b)
+        _, _, dist_m = geod.inv(lng_a, lat_a, lng_b, lat_b)
+        return float(dist_m)
+
+    def _coerce_speed_kph(speed_raw: Any) -> Optional[float]:
+        # OSMnx edge attributes can be scalar, list, or strings like "25 mph".
+        vals: List[float] = []
+        candidates = speed_raw if isinstance(speed_raw, (list, tuple, np.ndarray, pd.Series)) else [speed_raw]
+        for item in candidates:
+            if item is None:
+                continue
+            if isinstance(item, str):
+                txt = item.strip().lower().replace("mph", "").replace("kph", "")
+                txt = txt.replace("km/h", "").replace("kmh", "")
+                try:
+                    val = float(txt)
+                except Exception:
+                    continue
+            else:
+                try:
+                    val = float(item)
+                except Exception:
+                    continue
+            if np.isfinite(val) and val > 0:
+                vals.append(val)
+        if not vals:
+            return None
+        return float(np.median(vals))
+
     # Temporary store for parallel edge combining
     # key: (a, b) sorted -> list of candidate weights (seconds)
     pair_to_weights: Dict[Tuple[str, str], List[float]] = {}
+    pair_to_speeds_kph: Dict[Tuple[str, str], List[float]] = {}
 
     for u, v, k, data in Gp.edges(keys=True, data=True):
         w = data.get(weight_attr)
@@ -217,12 +278,16 @@ def build_h3_travel_graph_from_osm(
 
         # Split edge_time across steps between successive cells
         step_time = edge_time / float(len(cells) - 1)
+        edge_speed_kph = _coerce_speed_kph(data.get("speed_kph"))
 
         for a, b in zip(cells[:-1], cells[1:]):
             if a == b:
                 continue
             x, y = (a, b) if a < b else (b, a)
-            pair_to_weights.setdefault((x, y), []).append(step_time)
+            key = (x, y)
+            pair_to_weights.setdefault(key, []).append(step_time)
+            if edge_speed_kph is not None:
+                pair_to_speeds_kph.setdefault(key, []).append(edge_speed_kph)
 
     # Combine parallel weights into final graph edges
     for (a, b), ws in pair_to_weights.items():
@@ -230,7 +295,40 @@ def build_h3_travel_graph_from_osm(
             w_out = float(np.min(ws))
         else:
             w_out = float(np.mean(ws))
-        H.add_edge(a, b, **{weight_attr: w_out})
+        observed_w = float(w_out)
+        dist_m = _centroid_distance_m(a, b)
+        osm_speed_median_kph: Optional[float] = None
+        if pair_to_speeds_kph.get((a, b)):
+            osm_speed_median_kph = float(np.median(pair_to_speeds_kph[(a, b)]))
+        speed_kph_for_floor: Optional[float] = None
+        min_step_time: Optional[float] = None
+        floor_applied = False
+
+        if enforce_min_step_time:
+            # NOTE: This is where the logic to determine the minimum speed is set.
+            speed_kph_for_floor = float(v_max_kph)
+            if floor_speed_source == "osm_median":
+                if osm_speed_median_kph is not None:
+                    speed_kph_for_floor = float(osm_speed_median_kph)
+                speed_kph_for_floor = max(float(min_osm_speed_kph), min(float(v_max_kph), speed_kph_for_floor))
+            speed_mps = speed_kph_for_floor / 3.6
+            min_step_time = dist_m / speed_mps
+            w_out = max(w_out, float(min_step_time))
+            floor_applied = bool(w_out > observed_w + 1e-9)
+
+        H.add_edge(
+            a,
+            b,
+            **{
+                weight_attr: float(w_out),
+                "observed_step_time_raw_sec": observed_w,
+                "centroid_dist_m": float(dist_m),
+                "osm_median_speed_kph": osm_speed_median_kph,
+                "floor_speed_kph": speed_kph_for_floor,
+                "min_step_time_sec": min_step_time,
+                "floor_applied": floor_applied,
+            },
+        )
 
     return H
 
@@ -283,6 +381,65 @@ def h3_path_to_linestring(path_cells: List[str]) -> LineString:
     return LineString(coords)
 
 
+def print_h3_route_breakdown(
+    h3_graph: nx.Graph,
+    path_cells: List[str],
+    *,
+    weight_attr: str = "travel_time",
+    max_steps: Optional[int] = None,
+) -> None:
+    """
+    Print per-step diagnostics for an H3 route.
+    Uses edge attributes added by build_h3_travel_graph_from_osm.
+    """
+    if len(path_cells) < 2:
+        print("Route breakdown skipped: path has fewer than 2 cells.")
+        return
+
+    print("Route breakdown (per H3 step):")
+    print(f"idx | from_cell -> to_cell {' '*len('2a8ac61dfffff')} | dist_m | time_sec | implied_kph | raw_sec | floor_min_sec | floor_speed_kph | osm_median_kph | floor_applied")
+
+    total_time = 0.0
+    total_dist = 0.0
+    n_steps = len(path_cells) - 1
+    steps_to_print = n_steps if max_steps is None else min(n_steps, int(max_steps))
+
+    for idx, (a, b) in enumerate(zip(path_cells[:-1], path_cells[1:]), start=1):
+        if idx > steps_to_print:
+            break
+        ed = h3_graph[a][b]
+        time_sec = float(ed.get(weight_attr, 0.0))
+        dist_m = float(ed.get("centroid_dist_m", np.nan))
+        raw_sec = ed.get("observed_step_time_raw_sec")
+        min_floor_sec = ed.get("min_step_time_sec")
+        floor_speed_kph = ed.get("floor_speed_kph")
+        osm_median_kph = ed.get("osm_median_speed_kph")
+        floor_applied = bool(ed.get("floor_applied", False))
+        implied_kph = (dist_m / time_sec) * 3.6 if np.isfinite(dist_m) and time_sec > 0 else np.nan
+
+        total_time += time_sec
+        if np.isfinite(dist_m):
+            total_dist += dist_m
+
+        print(
+            f"{idx:03d} | {a} -> {b} | "
+            f"{dist_m:8.1f} | {time_sec:8.1f} | {implied_kph:10.2f} | "
+            f"{float(raw_sec) if raw_sec is not None else np.nan:7.1f} | "
+            f"{float(min_floor_sec) if min_floor_sec is not None else np.nan:12.1f} | "
+            f"{float(floor_speed_kph) if floor_speed_kph is not None else np.nan:14.1f} | "
+            f"{float(osm_median_kph) if osm_median_kph is not None else np.nan:14.1f} | "
+            f"{floor_applied}"
+        )
+
+    avg_kph = (total_dist / total_time) * 3.6 if total_time > 0 else np.nan
+    print(
+        f"Route summary: steps={n_steps}, printed={steps_to_print}, "
+        f"total_dist_m={total_dist:.1f}, total_time_sec={total_time:.1f}, avg_kph={avg_kph:.2f}"
+    )
+    if steps_to_print < n_steps:
+        print(f"Note: truncated output. Increase max_steps to view all {n_steps} steps.")
+
+
 def assign_nearest_target_by_h3_network(
     source_points: gpd.GeoDataFrame,
     target_points: gpd.GeoDataFrame,
@@ -294,7 +451,9 @@ def assign_nearest_target_by_h3_network(
     weight_attr: str = "travel_time",
     tie_break_project_crs: str = "EPSG:3857",
     out_path_col: Optional[str] = "h3_path",
-    out_time_col: Optional[str] = "h3_travel_time"
+    out_time_col: Optional[str] = "h3_travel_time",
+    debug_route_breakdown_source_idx: Optional[int] = 1,
+    debug_route_breakdown_max_steps: Optional[int] = None,
 ) -> gpd.GeoDataFrame:
     """
     For each source point, find the closest target point by network travel time on the H3 graph,
@@ -405,13 +564,13 @@ def assign_nearest_target_by_h3_network(
         # Also get the path that was taken to get to the destination
         path_cells: list[str] = paths[s_cell_graph]
         travel_time = float(distances[s_cell_graph])
-        if i == 1:  # or i < 2
-            path_cells = paths[s_cell_graph]
-            wts = []
-            for a, b in zip(path_cells[:-1], path_cells[1:]):
-                wts.append(h3_graph[a][b][weight_attr])
-            print("route edge weights:", wts)
-            print("sum route edge weights:", float(sum(wts)))
+        if debug_route_breakdown_source_idx is not None and i == debug_route_breakdown_source_idx:
+            print_h3_route_breakdown(
+                h3_graph,
+                path_cells,
+                weight_attr=weight_attr,
+                max_steps=debug_route_breakdown_max_steps,
+            )
         if out_path_col is not None:
             # list is fine, but you can also do "|".join(path_cells)
             src.loc[src.index[i], out_path_col] = "|".join(path_cells)
@@ -453,7 +612,17 @@ def demo_radford_montgomery_pipeline(
     """
     area = get_study_area_radford_montgomery(output_osm_test=test_outs)
     G_osm = download_osm_graph_drive(area.polygon_wgs84)
-    H_h3 = build_h3_travel_graph_from_osm(G_osm, h3_res=h3_res, weight_attr="travel_time", combine_parallel="mean", sample_meters=30)
+    H_h3 = build_h3_travel_graph_from_osm(
+        G_osm,
+        h3_res=h3_res,
+        weight_attr="travel_time",
+        combine_parallel="mean",
+        sample_meters=30,
+        enforce_min_step_time=True,
+        v_max_kph=60.0,
+        floor_speed_source="osm_median",  # use "vmax" for strict Variant A floor behavior
+        min_osm_speed_kph=10.0,
+    )
     # TODO delete test prints; used for debugging
     print("H_h3 nodes:", H_h3.number_of_nodes())
     print("H_h3 edges:", H_h3.number_of_edges())
@@ -522,21 +691,21 @@ if __name__ == "__main__":
 
     ox.settings.use_cache = True
     ox.settings.log_console = True
+    resolution_h3_cell: int = 9
 
     output_tests: bool = False
-    area, G_osm, H_h3, h3_grid = demo_radford_montgomery_pipeline(h3_res=8, test_outs=output_tests)  # Returns StudyArea, nx.MultiDiGraph, nx.Graph, gpd.GeoDataFrame
+    area, G_osm, H_h3, h3_grid = demo_radford_montgomery_pipeline(h3_res=resolution_h3_cell, test_outs=output_tests)  # Returns StudyArea, nx.MultiDiGraph, nx.Graph, gpd.GeoDataFrame
 
     print(area)
     print(G_osm)
     print(H_h3)
-    print(h3_grid)
+    # print(h3_grid)
     if output_tests:
-        gis.gdf_to_file(h3_grid,os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),"mocorad_h3_grid.geojson"), overwrite=True)
+        gis.gdf_to_file(h3_grid,os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),f"mocorad_h3_grid_rez{str(resolution_h3_cell)}.geojson"), overwrite=True)
     print()
     print("Connected components:", nx.number_connected_components(H_h3))
     sizes = sorted((len(c) for c in nx.connected_components(H_h3)), reverse=True)
     print("Largest components:", sizes[:10])
-
     # Synthetic example points
     src_points = gpd.GeoDataFrame(
         {"src_id": ["a", "b"]},
@@ -557,7 +726,7 @@ if __name__ == "__main__":
         target_id_col="tgt_id",
         out_col="nearest_tgt_id",
         h3_graph=H_h3,
-        h3_res=8,
+        h3_res=int(resolution_h3_cell),
         weight_attr="travel_time",
         out_path_col=pathcol
     )
@@ -585,20 +754,20 @@ if __name__ == "__main__":
     export = True
     if export:
         # XPRT
-        runtry = 4
+        runtry = 5
 
         gis.gdf_to_file(routes,
             os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),
-                         f"h3_routes_{str(runtry)}.geojson"),
+                         f"h3_routes_{str(runtry)}_rez{str(resolution_h3_cell)}.geojson"),
             file_format=".geojson", overwrite=True
         )
         gis.gdf_to_file(path_hexes,
             os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),
-                         f"h3_path_hexes_{str(runtry)}.geojson"),
+                         f"h3_path_hexes_{str(runtry)}_rez{str(resolution_h3_cell)}.geojson"),
                         file_format=".geojson", overwrite=True
                         )
         gis.gdf_to_file(out,os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),
-                         f"outtestresult_{str(runtry)}.geojson"), overwrite=True)
+                         f"outtestresult_{str(runtry)}_rez{str(resolution_h3_cell)}.geojson"), overwrite=True)
 
     print(out[["src_id", "nearest_tgt_id"]])
 
