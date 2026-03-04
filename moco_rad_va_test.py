@@ -89,7 +89,7 @@ if __name__ == "__main__":
 
     ox.settings.use_cache = True
     ox.settings.log_console = True
-    resolution_h3_cell: int = 9
+    resolution_h3_cell: int = 8
 
     output_tests: bool = False
     area, G_osm, H_h3, h3_grid = demo_radford_montgomery_pipeline(h3_res=resolution_h3_cell, test_outs=output_tests)  # Returns StudyArea, nx.MultiDiGraph, nx.Graph, gpd.GeoDataFrame
@@ -152,7 +152,7 @@ if __name__ == "__main__":
     export = True
     if export:
         # XPRT
-        runtry = 6
+        runtry = 7
 
         gis.gdf_to_file(routes,
             os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),

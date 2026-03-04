@@ -319,18 +319,31 @@ def build_h3_travel_graph_from_osm(
         if len(cells) < 2:
             continue
 
-        # Split edge_time across steps between successive cells
-        step_time = edge_time / float(len(cells) - 1)
+        # Split edge_time across sampled steps between successive cells.
+        # If a sampled jump spans multiple H3 cells, expand it so intermediate
+        # cells are explicitly represented in the graph.
+        sampled_step_time = edge_time / float(len(cells) - 1)
         edge_speed_kph = _coerce_speed_to_kph(data.get("speed_kph"))
 
         for a, b in zip(cells[:-1], cells[1:]):
             if a == b:
                 continue
-            x, y = (a, b) if a < b else (b, a)
-            key = (x, y)
-            pair_to_weights.setdefault(key, []).append(step_time)
-            if edge_speed_kph is not None:
-                pair_to_speeds_kph.setdefault(key, []).append(edge_speed_kph)
+            try:
+                expanded_cells = list(h3.grid_path_cells(a, b))
+            except Exception:
+                expanded_cells = [a, b]
+            if len(expanded_cells) < 2:
+                continue
+
+            expanded_step_time = sampled_step_time / float(len(expanded_cells) - 1)
+            for x_cell, y_cell in zip(expanded_cells[:-1], expanded_cells[1:]):
+                if x_cell == y_cell:
+                    continue
+                x, y = (x_cell, y_cell) if x_cell < y_cell else (y_cell, x_cell)
+                key = (x, y)
+                pair_to_weights.setdefault(key, []).append(expanded_step_time)
+                if edge_speed_kph is not None:
+                    pair_to_speeds_kph.setdefault(key, []).append(edge_speed_kph)
 
     # Combine parallel weights into final graph edges
     for (a, b), ws in pair_to_weights.items():
