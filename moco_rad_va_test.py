@@ -6,7 +6,6 @@ from typing import Tuple
 
 import networkx as nx
 import numpy as np
-import pandas as pd
 import geopandas as gpd
 import osmnx as ox
 from shapely.geometry import Point, Polygon
@@ -58,16 +57,17 @@ def demo_radford_montgomery_pipeline(
     """
     area = get_study_area_radford_montgomery(output_osm_test=test_outs)
     G_osm = hnetx.download_osm_graph_drive(area.polygon_wgs84)
+    # sample_spacing_miles = 30.0 / hnetx.METERS_PER_MILE
     H_h3 = hnetx.build_h3_travel_graph_from_osm(
         G_osm,
         h3_res=h3_res,
         weight_attr="travel_time",
         combine_parallel="mean",
-        sample_meters=30,
+        sample_miles=15,
         enforce_min_step_time=True,
-        v_max_kph=60.0,
+        v_max_mph=35, # 60.0 / hnetx.KM_PER_MILE,  # keeps old 60 kph calibration behavior
         floor_speed_source="osm_median",  # use "vmax" for strict Variant A floor behavior
-        min_osm_speed_kph=10.0,
+        min_osm_speed_mph=10.0 / hnetx.KM_PER_MILE,  # keeps old 10 kph lower clamp behavior
     )
     # TODO delete test prints; used for debugging
     print("H_h3 nodes:", H_h3.number_of_nodes())
@@ -152,7 +152,7 @@ if __name__ == "__main__":
     export = True
     if export:
         # XPRT
-        runtry = 5
+        runtry = 6
 
         gis.gdf_to_file(routes,
             os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),
@@ -167,7 +167,7 @@ if __name__ == "__main__":
         gis.gdf_to_file(out,os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),
                          f"outtestresult_{str(runtry)}_rez{str(resolution_h3_cell)}.geojson"), overwrite=True)
 
-    print(out[["src_id", "nearest_tgt_id"]])
+    print(out[["src_id", "nearest_tgt_id", "h3_travel_miles", "h3_travel_time"]])
 
     cf.runtime(start)
     # return out

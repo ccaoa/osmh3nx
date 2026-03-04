@@ -16,6 +16,7 @@ I want to look at a test case in Radford City and Montgomery County, Virginia to
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, Set
+import re
 import warnings
 
 import networkx as nx
@@ -26,6 +27,91 @@ import pyproj
 import geopandas as gpd
 import h3
 from h3 import LatLngMultiPoly, LatLngPoly
+
+METERS_PER_MILE: float = 1609.344
+KM_PER_MILE: float = 1.609344
+SECONDS_PER_HOUR: float = 3600.0
+
+
+def _meters_to_miles(meters: float) -> float:
+    return float(meters) / METERS_PER_MILE
+
+
+def _miles_to_meters(miles: float) -> float:
+    return float(miles) * METERS_PER_MILE
+
+
+def _kph_to_mph(kph: float) -> float:
+    return float(kph) / KM_PER_MILE
+
+
+def _mph_to_kph(mph: float) -> float:
+    return float(mph) * KM_PER_MILE
+
+
+def _resolve_distance_meters(
+    *,
+    miles: Optional[float],
+    meters: Optional[float],
+    default_meters: float,
+) -> float:
+    if miles is not None and meters is not None:
+        raise ValueError("Specify only one of miles or meters, not both.")
+    if miles is not None:
+        out = _miles_to_meters(float(miles))
+    elif meters is not None:
+        out = float(meters)
+    else:
+        out = float(default_meters)
+    if out <= 0:
+        raise ValueError("Distance must be > 0.")
+    return out
+
+
+def _resolve_speed_kph(
+    *,
+    mph: Optional[float],
+    kph: Optional[float],
+    default_kph: float,
+) -> float:
+    if mph is not None and kph is not None:
+        raise ValueError("Specify only one of mph or kph, not both.")
+    if mph is not None:
+        out = _mph_to_kph(float(mph))
+    elif kph is not None:
+        out = float(kph)
+    else:
+        out = float(default_kph)
+    if out <= 0:
+        raise ValueError("Speed must be > 0.")
+    return out
+
+
+def _coerce_speed_to_kph(speed_raw: Any) -> Optional[float]:
+    # OSMnx edge attributes can be scalar, list, or strings like "25 mph".
+    vals_kph: List[float] = []
+    candidates = speed_raw if isinstance(speed_raw, (list, tuple, np.ndarray, pd.Series)) else [speed_raw]
+    for item in candidates:
+        if item is None:
+            continue
+        if isinstance(item, str):
+            txt = item.strip().lower()
+            match = re.search(r"[-+]?\d*\.?\d+", txt)
+            if match is None:
+                continue
+            val = float(match.group(0))
+            if "mph" in txt:
+                val = _mph_to_kph(val)
+        else:
+            try:
+                val = float(item)
+            except Exception:
+                continue
+        if np.isfinite(val) and val > 0:
+            vals_kph.append(val)
+    if not vals_kph:
+        return None
+    return float(np.median(vals_kph))
 
 
 def download_osm_graph_drive(polygon_wgs84: Polygon) -> nx.MultiDiGraph:
@@ -98,18 +184,21 @@ def build_h3_travel_graph_from_osm(
     h3_res: int,
     *,
     weight_attr: str = "travel_time",
-    sample_meters: float = 100.0,
+    sample_miles: Optional[float] = None,
+    sample_meters: Optional[float] = None,
     combine_parallel: str = "min",
     enforce_min_step_time: bool = True,
-    v_max_kph: float = 60.0,
+    v_max_mph: Optional[float] = None,
+    v_max_kph: Optional[float] = None,
     floor_speed_source: str = "vmax",
-    min_osm_speed_kph: float = 10.0,
+    min_osm_speed_mph: Optional[float] = None,
+    min_osm_speed_kph: Optional[float] = None,
 ) -> nx.Graph:
     """
     Build an H3-level undirected travel graph by sampling along each OSM edge geometry.
 
     Key differences vs endpoint-only:
-      - Samples points along each edge every sample_meters (in a projected CRS)
+      - Samples points along each edge every sample_miles (or sample_meters) in a projected CRS
       - Converts sampled points to H3 cells
       - Connects successive cells, splitting edge travel_time across the steps
 
@@ -123,18 +212,34 @@ def build_h3_travel_graph_from_osm(
         edge_time = max(observed_edge_time, min_time)
 
     floor_speed_source:
-      - "vmax": speed_mps is derived from v_max_kph (strict minimum-time floor behavior)
+      - "vmax": speed_mps is derived from v_max_mph (or v_max_kph) (strict minimum-time floor behavior)
       - "osm_median": speed_mps is derived from the median OSM speed_kph observed for that
-        adjacency, clamped to [min_osm_speed_kph, v_max_kph]
+        adjacency, clamped to [min_osm_speed_mph, v_max_mph] (or the kph equivalents)
         (keeps OSM connectivity and introduces a local speed signal)
     """
+    sample_meters_value = _resolve_distance_meters(
+        miles=sample_miles,
+        meters=sample_meters,
+        default_meters=100.0,
+    )
+    v_max_kph_value = _resolve_speed_kph(
+        mph=v_max_mph,
+        kph=v_max_kph,
+        default_kph=60.0,
+    )
+    min_osm_speed_kph_value = _resolve_speed_kph(
+        mph=min_osm_speed_mph,
+        kph=min_osm_speed_kph,
+        default_kph=10.0,
+    )
+
     if combine_parallel not in {"min", "mean"}:
         raise ValueError("combine_parallel must be one of: 'min', 'mean'")
     if floor_speed_source not in {"vmax", "osm_median"}:
         raise ValueError("floor_speed_source must be one of: 'vmax', 'osm_median'")
-    if v_max_kph <= 0:
+    if v_max_kph_value <= 0:
         raise ValueError("v_max_kph must be > 0")
-    if min_osm_speed_kph <= 0:
+    if min_osm_speed_kph_value <= 0:
         raise ValueError("min_osm_speed_kph must be > 0")
 
     # Project graph to a metric CRS so sampling is in meters
@@ -174,31 +279,6 @@ def build_h3_travel_graph_from_osm(
         _, _, dist_m = geod.inv(lng_a, lat_a, lng_b, lat_b)
         return float(dist_m)
 
-    def _coerce_speed_kph(speed_raw: Any) -> Optional[float]:
-        # OSMnx edge attributes can be scalar, list, or strings like "25 mph".
-        vals: List[float] = []
-        candidates = speed_raw if isinstance(speed_raw, (list, tuple, np.ndarray, pd.Series)) else [speed_raw]
-        for item in candidates:
-            if item is None:
-                continue
-            if isinstance(item, str):
-                txt = item.strip().lower().replace("mph", "").replace("kph", "")
-                txt = txt.replace("km/h", "").replace("kmh", "")
-                try:
-                    val = float(txt)
-                except Exception:
-                    continue
-            else:
-                try:
-                    val = float(item)
-                except Exception:
-                    continue
-            if np.isfinite(val) and val > 0:
-                vals.append(val)
-        if not vals:
-            return None
-        return float(np.median(vals))
-
     # Temporary store for parallel edge combining
     # key: (a, b) sorted -> list of candidate weights (seconds)
     pair_to_weights: Dict[Tuple[str, str], List[float]] = {}
@@ -220,7 +300,7 @@ def build_h3_travel_graph_from_osm(
             continue
 
         # Number of segments based on sampling resolution
-        n_segs = int(np.ceil(length_m / float(sample_meters)))
+        n_segs = int(np.ceil(length_m / float(sample_meters_value)))
         n_segs = max(n_segs, 1)
 
         # Sample along the line at segment boundaries
@@ -241,7 +321,7 @@ def build_h3_travel_graph_from_osm(
 
         # Split edge_time across steps between successive cells
         step_time = edge_time / float(len(cells) - 1)
-        edge_speed_kph = _coerce_speed_kph(data.get("speed_kph"))
+        edge_speed_kph = _coerce_speed_to_kph(data.get("speed_kph"))
 
         for a, b in zip(cells[:-1], cells[1:]):
             if a == b:
@@ -269,11 +349,14 @@ def build_h3_travel_graph_from_osm(
 
         if enforce_min_step_time:
             # NOTE: This is where the logic to determine the minimum speed is set.
-            speed_kph_for_floor = float(v_max_kph)
+            speed_kph_for_floor = float(v_max_kph_value)
             if floor_speed_source == "osm_median":
                 if osm_speed_median_kph is not None:
                     speed_kph_for_floor = float(osm_speed_median_kph)
-                speed_kph_for_floor = max(float(min_osm_speed_kph), min(float(v_max_kph), speed_kph_for_floor))
+                speed_kph_for_floor = max(
+                    float(min_osm_speed_kph_value),
+                    min(float(v_max_kph_value), speed_kph_for_floor),
+                )
             speed_mps = speed_kph_for_floor / 3.6
             min_step_time = dist_m / speed_mps
             w_out = max(w_out, float(min_step_time))
@@ -286,8 +369,11 @@ def build_h3_travel_graph_from_osm(
                 weight_attr: float(w_out),
                 "observed_step_time_raw_sec": observed_w,
                 "centroid_dist_m": float(dist_m),
+                "centroid_dist_miles": _meters_to_miles(dist_m),
                 "osm_median_speed_kph": osm_speed_median_kph,
+                "osm_median_speed_mph": _kph_to_mph(osm_speed_median_kph) if osm_speed_median_kph is not None else None,
                 "floor_speed_kph": speed_kph_for_floor,
+                "floor_speed_mph": _kph_to_mph(speed_kph_for_floor) if speed_kph_for_floor is not None else None,
                 "min_step_time_sec": min_step_time,
                 "floor_applied": floor_applied,
             },
@@ -360,10 +446,12 @@ def print_h3_route_breakdown(
         return
 
     print("Route breakdown (per H3 step):")
-    print(f"idx | from_cell -> to_cell {' '*len('2a8ac61dfffff')} | dist_m | time_sec | implied_kph | raw_sec | floor_min_sec | floor_speed_kph | osm_median_kph | floor_applied")
+    print(
+        f"idx | from_cell -> to_cell {' '*len('2a8ac61dfffff')} | dist_mi | time_sec | implied_mph | raw_sec | floor_min_sec | floor_speed_mph | osm_median_mph | floor_applied"
+    )
 
     total_time = 0.0
-    total_dist = 0.0
+    total_dist_miles = 0.0
     n_steps = len(path_cells) - 1
     steps_to_print = n_steps if max_steps is None else min(n_steps, int(max_steps))
 
@@ -372,35 +460,58 @@ def print_h3_route_breakdown(
             break
         ed = h3_graph[a][b]
         time_sec = float(ed.get(weight_attr, 0.0))
-        dist_m = float(ed.get("centroid_dist_m", np.nan))
+        dist_miles_raw = ed.get("centroid_dist_miles")
+        if dist_miles_raw is not None:
+            dist_miles = float(dist_miles_raw)
+        else:
+            dist_m = ed.get("centroid_dist_m")
+            dist_miles = _meters_to_miles(float(dist_m)) if dist_m is not None else np.nan
         raw_sec = ed.get("observed_step_time_raw_sec")
         min_floor_sec = ed.get("min_step_time_sec")
-        floor_speed_kph = ed.get("floor_speed_kph")
-        osm_median_kph = ed.get("osm_median_speed_kph")
+        floor_speed_mph = ed.get("floor_speed_mph")
+        if floor_speed_mph is None and ed.get("floor_speed_kph") is not None:
+            floor_speed_mph = _kph_to_mph(float(ed["floor_speed_kph"]))
+        osm_median_mph = ed.get("osm_median_speed_mph")
+        if osm_median_mph is None and ed.get("osm_median_speed_kph") is not None:
+            osm_median_mph = _kph_to_mph(float(ed["osm_median_speed_kph"]))
         floor_applied = bool(ed.get("floor_applied", False))
-        implied_kph = (dist_m / time_sec) * 3.6 if np.isfinite(dist_m) and time_sec > 0 else np.nan
+        implied_mph = (dist_miles / time_sec) * SECONDS_PER_HOUR if np.isfinite(dist_miles) and time_sec > 0 else np.nan
 
         total_time += time_sec
-        if np.isfinite(dist_m):
-            total_dist += dist_m
+        if np.isfinite(dist_miles):
+            total_dist_miles += dist_miles
 
         print(
             f"{idx:03d} | {a} -> {b} | "
-            f"{dist_m:8.1f} | {time_sec:8.1f} | {implied_kph:10.2f} | "
+            f"{dist_miles:8.3f} | {time_sec:8.1f} | {implied_mph:10.2f} | "
             f"{float(raw_sec) if raw_sec is not None else np.nan:7.1f} | "
             f"{float(min_floor_sec) if min_floor_sec is not None else np.nan:12.1f} | "
-            f"{float(floor_speed_kph) if floor_speed_kph is not None else np.nan:14.1f} | "
-            f"{float(osm_median_kph) if osm_median_kph is not None else np.nan:14.1f} | "
+            f"{float(floor_speed_mph) if floor_speed_mph is not None else np.nan:15.1f} | "
+            f"{float(osm_median_mph) if osm_median_mph is not None else np.nan:14.1f} | "
             f"{floor_applied}"
         )
 
-    avg_kph = (total_dist / total_time) * 3.6 if total_time > 0 else np.nan
+    avg_mph = (total_dist_miles / total_time) * SECONDS_PER_HOUR if total_time > 0 else np.nan
     print(
         f"Route summary: steps={n_steps}, printed={steps_to_print}, "
-        f"total_dist_m={total_dist:.1f}, total_time_sec={total_time:.1f}, avg_kph={avg_kph:.2f}"
+        f"total_dist_miles={total_dist_miles:.3f}, total_time_sec={total_time:.1f}, avg_mph={avg_mph:.2f}"
     )
     if steps_to_print < n_steps:
         print(f"Note: truncated output. Increase max_steps to view all {n_steps} steps.")
+
+
+def _path_distance_miles(h3_graph: nx.Graph, path_cells: Sequence[str]) -> float:
+    total_miles = 0.0
+    for a, b in zip(path_cells[:-1], path_cells[1:]):
+        ed = h3_graph[a][b]
+        dist_miles_raw = ed.get("centroid_dist_miles")
+        if dist_miles_raw is not None:
+            total_miles += float(dist_miles_raw)
+            continue
+        dist_m_raw = ed.get("centroid_dist_m")
+        if dist_m_raw is not None and np.isfinite(float(dist_m_raw)):
+            total_miles += _meters_to_miles(float(dist_m_raw))
+    return float(total_miles)
 
 
 def assign_nearest_target_by_h3_network(
@@ -415,6 +526,7 @@ def assign_nearest_target_by_h3_network(
     tie_break_project_crs: str = "EPSG:3857",
     out_path_col: Optional[str] = "h3_path",
     out_time_col: Optional[str] = "h3_travel_time",
+    out_distance_col: Optional[str] = "h3_travel_miles",
     debug_route_breakdown_source_idx: Optional[int] = 1,
     debug_route_breakdown_max_steps: Optional[int] = None,
 ) -> gpd.GeoDataFrame:
@@ -431,6 +543,7 @@ def assign_nearest_target_by_h3_network(
       4) If multiple target points fall in that cell, break ties by planar distance in a projected CRS.
 
     Returns a copy of source_points with out_col added.
+    Time outputs are seconds. Distance outputs are miles.
     """
     if target_id_col not in target_points.columns:
         raise ValueError(f"target_id_col '{target_id_col}' not found in target_points")
@@ -527,6 +640,7 @@ def assign_nearest_target_by_h3_network(
         # Also get the path that was taken to get to the destination
         path_cells: list[str] = paths[s_cell_graph]
         travel_time = float(distances[s_cell_graph])
+        travel_miles = _path_distance_miles(h3_graph, path_cells)
         if debug_route_breakdown_source_idx is not None and i == debug_route_breakdown_source_idx:
             print_h3_route_breakdown(
                 h3_graph,
@@ -539,6 +653,8 @@ def assign_nearest_target_by_h3_network(
             src.loc[src.index[i], out_path_col] = "|".join(path_cells)
         if out_time_col is not None:
             src.loc[src.index[i], out_time_col] = travel_time
+        if out_distance_col is not None:
+            src.loc[src.index[i], out_distance_col] = travel_miles
 
         # Nearest target cell is the first element in the returned path
         nearest_cell = paths[s_cell_graph][0]
@@ -572,6 +688,7 @@ def build_route_gdf_from_assignment(
     src_id_col: str,
     path_col: str = "h3_path",
     time_col: str = "h3_travel_time",
+    distance_col: str = "h3_travel_miles",
     target_id_col: str = "nearest_tgt_id",
 ) -> gpd.GeoDataFrame:
     rows: list[dict[str, Any]] = []
@@ -591,6 +708,7 @@ def build_route_gdf_from_assignment(
                 src_id_col: r.get(src_id_col),
                 target_id_col: r.get(target_id_col),
                 time_col: r.get(time_col),
+                distance_col: r.get(distance_col),
                 "n_cells": len(cells),
                 "geometry": geom,
             }
