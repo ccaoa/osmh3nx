@@ -193,6 +193,8 @@ def build_h3_travel_graph_from_osm(
     floor_speed_source: str = "vmax",
     min_osm_speed_mph: Optional[float] = None,
     min_osm_speed_kph: Optional[float] = None,
+    preserve_way_geometry: bool = True,
+    way_cell_refine_max_depth: int = 18,
 ) -> nx.Graph:
     """
     Build an H3-level undirected travel graph by sampling along each OSM edge geometry.
@@ -216,6 +218,15 @@ def build_h3_travel_graph_from_osm(
       - "osm_median": speed_mps is derived from the median OSM speed_kph observed for that
         adjacency, clamped to [min_osm_speed_mph, v_max_mph] (or the kph equivalents)
         (keeps OSM connectivity and introduces a local speed signal)
+
+    preserve_way_geometry:
+      - True: derive crossed H3 cells from the edge geometry itself using recursive midpoint
+        refinement so transitions follow the way shape.
+      - False: use sampled cells directly, with per-jump grid-path expansion fallback.
+
+    way_cell_refine_max_depth:
+      - maximum recursion depth for geometry-driven midpoint refinement when
+        preserve_way_geometry=True.
     """
     sample_meters_value = _resolve_distance_meters(
         miles=sample_miles,
@@ -271,6 +282,93 @@ def build_h3_travel_graph_from_osm(
         lng, lat = to_wgs84.transform(x, y)
         return h3.latlng_to_cell(lat, lng, h3_res)
 
+    def _grid_distance(a: str, b: str) -> Optional[int]:
+        try:
+            return int(h3.grid_distance(a, b))
+        except Exception:
+            return None
+
+    def _fallback_grid_path(a: str, b: str) -> List[str]:
+        try:
+            path = list(h3.grid_path_cells(a, b))
+            if len(path) >= 2:
+                return path
+        except Exception:
+            pass
+        return [a, b]
+
+    def _cells_between_distances(
+        line: LineString,
+        d0: float,
+        d1: float,
+        c0: str,
+        c1: str,
+        depth: int,
+    ) -> List[str]:
+        if c0 == c1:
+            return [c0]
+
+        gd = _grid_distance(c0, c1)
+        if gd == 1:
+            return [c0, c1]
+
+        if depth >= int(way_cell_refine_max_depth):
+            return _fallback_grid_path(c0, c1)
+
+        mid = (float(d0) + float(d1)) / 2.0
+        if not (d0 < mid < d1):
+            return _fallback_grid_path(c0, c1)
+
+        mid_pt = line.interpolate(mid)
+        c_mid = _h3_cell_from_xy(float(mid_pt.x), float(mid_pt.y))
+
+        left = _cells_between_distances(line, d0, mid, c0, c_mid, depth + 1)
+        right = _cells_between_distances(line, mid, d1, c_mid, c1, depth + 1)
+        if not left:
+            return right
+        if not right:
+            return left
+        if left[-1] == right[0]:
+            return left + right[1:]
+        return left + right
+
+    def _trace_cells_along_line(line: LineString, dists: np.ndarray) -> List[str]:
+        sampled: List[Tuple[float, str]] = []
+        last_cell: Optional[str] = None
+        for d in dists.tolist():
+            pt = line.interpolate(float(d))
+            c = _h3_cell_from_xy(float(pt.x), float(pt.y))
+            if c != last_cell:
+                sampled.append((float(d), c))
+                last_cell = c
+
+        if len(sampled) < 2:
+            return [sampled[0][1]] if sampled else []
+
+        cells: List[str] = [sampled[0][1]]
+        for (d0, c0), (d1, c1) in zip(sampled[:-1], sampled[1:]):
+            if c0 == c1:
+                continue
+            if preserve_way_geometry:
+                seg_cells = _cells_between_distances(line, d0, d1, c0, c1, 0)
+            else:
+                seg_cells = _fallback_grid_path(c0, c1) if _grid_distance(c0, c1) not in {0, 1} else [c0, c1]
+            if not seg_cells:
+                continue
+            if cells[-1] == seg_cells[0]:
+                cells.extend(seg_cells[1:])
+            else:
+                cells.extend(seg_cells)
+
+        # Consecutive dedupe for robustness after fallback stitching.
+        deduped: List[str] = []
+        prev: Optional[str] = None
+        for c in cells:
+            if c != prev:
+                deduped.append(c)
+                prev = c
+        return deduped
+
     geod = pyproj.Geod(ellps="WGS84")
 
     def _centroid_distance_m(cell_a: str, cell_b: str) -> float:
@@ -306,44 +404,25 @@ def build_h3_travel_graph_from_osm(
         # Sample along the line at segment boundaries
         dists = np.linspace(0.0, length_m, n_segs + 1)
 
-        # Convert sampled points to H3 cells, dedupe consecutive repeats
-        cells: List[str] = []
-        last: Optional[str] = None
-        for d in dists:
-            pt = line.interpolate(d)
-            c = _h3_cell_from_xy(float(pt.x), float(pt.y))
-            if c != last:
-                cells.append(c)
-                last = c
+        # Convert sampled points to H3 cells and refine transitions so crossed cells
+        # follow way geometry instead of geometric shortcuts through hex space.
+        cells = _trace_cells_along_line(line, dists)
 
         if len(cells) < 2:
             continue
 
-        # Split edge_time across sampled steps between successive cells.
-        # If a sampled jump spans multiple H3 cells, expand it so intermediate
-        # cells are explicitly represented in the graph.
+        # Split edge_time across traced steps between successive cells.
         sampled_step_time = edge_time / float(len(cells) - 1)
         edge_speed_kph = _coerce_speed_to_kph(data.get("speed_kph"))
 
         for a, b in zip(cells[:-1], cells[1:]):
             if a == b:
                 continue
-            try:
-                expanded_cells = list(h3.grid_path_cells(a, b))
-            except Exception:
-                expanded_cells = [a, b]
-            if len(expanded_cells) < 2:
-                continue
-
-            expanded_step_time = sampled_step_time / float(len(expanded_cells) - 1)
-            for x_cell, y_cell in zip(expanded_cells[:-1], expanded_cells[1:]):
-                if x_cell == y_cell:
-                    continue
-                x, y = (x_cell, y_cell) if x_cell < y_cell else (y_cell, x_cell)
-                key = (x, y)
-                pair_to_weights.setdefault(key, []).append(expanded_step_time)
-                if edge_speed_kph is not None:
-                    pair_to_speeds_kph.setdefault(key, []).append(edge_speed_kph)
+            x, y = (a, b) if a < b else (b, a)
+            key = (x, y)
+            pair_to_weights.setdefault(key, []).append(sampled_step_time)
+            if edge_speed_kph is not None:
+                pair_to_speeds_kph.setdefault(key, []).append(edge_speed_kph)
 
     # Combine parallel weights into final graph edges
     for (a, b), ws in pair_to_weights.items():
