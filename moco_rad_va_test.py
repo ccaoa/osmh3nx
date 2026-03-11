@@ -63,7 +63,7 @@ def demo_radford_montgomery_pipeline(
         h3_res=h3_res,
         weight_attr="travel_time",
         combine_parallel="mean",
-        sample_miles=15,
+        sample_miles=0.1,
         enforce_min_step_time=True,
         v_max_mph=35, # 60.0 / hnetx.KM_PER_MILE,  # keeps old 60 kph calibration behavior
         floor_speed_source="osm_median",  # use "vmax" for strict Variant A floor behavior

@@ -26,7 +26,7 @@ class CalibrationConfig:
     h3_resolutions: Tuple[int, ...] = (7, 8, 9, 10)
     weight_attr: str = "travel_time"
     bbox_buffer_miles: float = 15.0
-    sample_miles: float = 15.0
+    sample_miles: float = 0.1
     combine_parallel: str = "mean"
     enforce_min_step_time: bool = True
     v_max_mph: float = 35.0
@@ -502,7 +502,7 @@ if __name__ == "__main__":
     cfg = CalibrationConfig(
         h3_resolutions=(7, 8, 9, 10),
         bbox_buffer_miles=15.0,
-        sample_miles=15.0,
+        sample_miles=0.1,
         combine_parallel="mean",
         enforce_min_step_time=True,
         v_max_mph=35.0,
