@@ -4,6 +4,7 @@ import argparse
 import json
 import pickle
 from pathlib import Path
+import sys
 from typing import Any, Dict, Iterable, List, Sequence
 
 import geopandas as gpd
@@ -14,6 +15,11 @@ import pyproj
 from shapely import wkt
 from shapely.geometry import LineString, MultiLineString, Point, Polygon
 from shapely.ops import linemerge, unary_union
+
+# Ensure imports work when this script lives under ./offline.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import network_h3 as hnetx
 
@@ -321,9 +327,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 if __name__ == "__main__":
-    """
-    $ venv\Scripts\python.exe export_pair_routes_qgis.py --pair-dir osmh3nx_offline_bundle\pair_00001 --out-gpkg osmh3nx_offline_bundle\pair_00001\pair_00001_routes_review.gpkg  --resolutions 7,8,9,10
-    """
     args = _build_parser().parse_args()
     result = export_pair_routes_to_qgis(
         pair_dir=Path(args.pair_dir).resolve(),

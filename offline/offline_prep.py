@@ -6,6 +6,7 @@ import os
 import pickle
 from dataclasses import asdict, dataclass
 from pathlib import Path
+import sys
 from typing import Any, Dict, List, Sequence, Tuple
 
 import networkx as nx
@@ -13,6 +14,11 @@ import osmnx as ox
 import pandas as pd
 from shapely import wkt
 from shapely.geometry import Point
+
+# Ensure imports work when this script lives under ./offline.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import network_h3 as hnetx
 import network_osm as onetx
