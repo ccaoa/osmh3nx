@@ -8,3 +8,4 @@ osmnx
 shapely>=2.0  # Check if we need this explicitly, but it is a geopandas and osmnx req
 h3
 geopandas
+scikit-learn
