@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import geopandas as gpd
 import networkx as nx
 import osmnx as ox
+import pyproj
 from shapely.geometry import LineString, Point, Polygon, box
 
 METERS_PER_MILE: float = 1609.344
@@ -198,24 +199,40 @@ def route_between_points_on_graph(
 ) -> OSMRouteResult:
     """
     Route one OD pair on an OSM graph.
+    Uses projected nearest-node lookup to avoid unprojected NN optional deps.
+    Returns route geometry in EPSG:4326.
     """
+    G_proj = ox.project_graph(G)
+    crs_proj = G_proj.graph.get("crs")
+    if crs_proj is None:
+        raise ValueError("Projected OSM graph is missing CRS.")
+    to_proj = pyproj.Transformer.from_crs("EPSG:4326", crs_proj, always_xy=True)
+    ox_x, ox_y = to_proj.transform(float(origin_wgs84.x), float(origin_wgs84.y))
+    dx_x, dx_y = to_proj.transform(float(destination_wgs84.x), float(destination_wgs84.y))
+
     origin_node = ox.distance.nearest_nodes(
-        G,
-        X=float(origin_wgs84.x),
-        Y=float(origin_wgs84.y),
+        G_proj,
+        X=float(ox_x),
+        Y=float(ox_y),
     )
     destination_node = ox.distance.nearest_nodes(
-        G,
-        X=float(destination_wgs84.x),
-        Y=float(destination_wgs84.y),
+        G_proj,
+        X=float(dx_x),
+        Y=float(dx_y),
     )
 
-    route_nodes = nx.shortest_path(G, source=origin_node, target=destination_node, weight=weight_attr)
+    route_nodes = nx.shortest_path(
+        G_proj,
+        source=origin_node,
+        target=destination_node,
+        weight=weight_attr,
+    )
     geom, travel_time_sec, length_m, route_edges = _build_route_geometry_and_metrics(
-        G,
+        G_proj,
         route_nodes,
         weight_attr=weight_attr,
     )
+    geom_wgs84 = gpd.GeoSeries([geom], crs=crs_proj).to_crs("EPSG:4326").iloc[0]
     return OSMRouteResult(
         origin_node=origin_node,
         destination_node=destination_node,
@@ -223,7 +240,7 @@ def route_between_points_on_graph(
         route_edges=route_edges,
         travel_time_sec=float(travel_time_sec),
         length_m=float(length_m),
-        geometry=geom,
+        geometry=geom_wgs84,
     )
 
 
