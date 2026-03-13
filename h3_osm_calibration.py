@@ -36,7 +36,7 @@ class CalibrationConfig:
     min_osm_speed_mph: float = 10.0 / hnetx.KM_PER_MILE
     route_weight_attr: str = "travel_time_route"
     route_floor_penalty_weight: float = 0.35
-    shape_corridor_meters: float = 250.0
+    shape_corridor_meters: float = 100.0
     snap_k: int = 10
 
 
@@ -647,7 +647,7 @@ if __name__ == "__main__":
         min_osm_speed_mph=10.0 / hnetx.KM_PER_MILE,
         route_weight_attr="travel_time_route",
         route_floor_penalty_weight=0.35,
-        shape_corridor_meters=250.0,
+        shape_corridor_meters=100.0,
         snap_k=10,
     )
 
