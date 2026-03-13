@@ -24,14 +24,17 @@ except ImportError:
 @dataclass(frozen=True)
 class CalibrationConfig:
     h3_resolutions: Tuple[int, ...] = (7, 8, 9, 10)
-    weight_attr: str = "travel_time"
+    osm_weight_attr: str = "travel_time"
+    h3_weight_attr: str = "travel_time_route"
     bbox_buffer_miles: float = 15.0
     sample_miles: float = 0.1
     combine_parallel: str = "p25"
     enforce_min_step_time: bool = True
-    v_max_mph: float = 35.0
-    floor_speed_source: str = "osm_median"
+    v_max_mph: float = 50.0
+    floor_speed_source: str = "vmax"
     min_osm_speed_mph: float = 10.0 / hnetx.KM_PER_MILE
+    route_weight_attr: str = "travel_time_route"
+    route_floor_penalty_weight: float = 0.35
     snap_k: int = 10
 
 
@@ -284,7 +287,7 @@ def run_h3_osm_calibration(
                 G_osm,
                 origin_wgs84=origin,
                 destination_wgs84=destination,
-                weight_attr=config.weight_attr,
+                weight_attr=config.osm_weight_attr,
             )
             osm_time_sec = float(osm_result.travel_time_sec)
             osm_miles = float(osm_result.length_m / hnetx.METERS_PER_MILE)
@@ -330,13 +333,15 @@ def run_h3_osm_calibration(
                     H_h3 = hnetx.build_h3_travel_graph_from_osm(
                         G_osm,
                         h3_res=h3_res,
-                        weight_attr=config.weight_attr,
+                        weight_attr=config.osm_weight_attr,
                         sample_miles=config.sample_miles,
                         combine_parallel=config.combine_parallel,
                         enforce_min_step_time=config.enforce_min_step_time,
                         v_max_mph=config.v_max_mph,
                         floor_speed_source=config.floor_speed_source,
                         min_osm_speed_mph=config.min_osm_speed_mph,
+                        route_weight_attr=config.route_weight_attr,
+                        route_floor_penalty_weight=config.route_floor_penalty_weight,
                     )
                     h3_graph_nodes = H_h3.number_of_nodes()
                     h3_graph_edges = H_h3.number_of_edges()
@@ -346,7 +351,7 @@ def run_h3_osm_calibration(
                         origin_wgs84=origin,
                         destination_wgs84=destination,
                         h3_res=h3_res,
-                        weight_attr=config.weight_attr,
+                        weight_attr=config.h3_weight_attr,
                         snap_k=config.snap_k,
                     )
                     h3_status = str(h3_result["status"])
@@ -494,7 +499,7 @@ if __name__ == "__main__":
     ox.settings.use_cache = True
     ox.settings.log_console = True
 
-    vintage = 2
+    vintage = 3
     output_dir = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
     csv_file = os.path.join(os.path.dirname(__file__), "osm_scale_calibration.csv")
     output_gpkg = os.path.join(output_dir, f"h3_osm_calibration_vintage{vintage}.gpkg")
@@ -505,9 +510,11 @@ if __name__ == "__main__":
         sample_miles=0.1,
         combine_parallel="p25",
         enforce_min_step_time=True,
-        v_max_mph=35.0,
-        floor_speed_source="osm_median",
+        v_max_mph=50.0,
+        floor_speed_source="vmax",
         min_osm_speed_mph=10.0 / hnetx.KM_PER_MILE,
+        route_weight_attr="travel_time_route",
+        route_floor_penalty_weight=0.35,
         snap_k=10,
     )
 

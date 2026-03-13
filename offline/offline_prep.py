@@ -34,6 +34,8 @@ class OfflinePrepConfig:
     v_max_mph: float = 35.0
     floor_speed_source: str = "osm_median"
     min_osm_speed_mph: float = 10.0 / hnetx.KM_PER_MILE
+    route_weight_attr: str = "travel_time_route"
+    route_floor_penalty_weight: float = 0.35
     preserve_way_geometry: bool = True
     way_cell_refine_max_depth: int = 18
     max_pairs: int | None = None
@@ -117,6 +119,8 @@ def _prep_pair(
                 v_max_mph=config.v_max_mph,
                 floor_speed_source=config.floor_speed_source,
                 min_osm_speed_mph=config.min_osm_speed_mph,
+                route_weight_attr=config.route_weight_attr,
+                route_floor_penalty_weight=config.route_floor_penalty_weight,
                 preserve_way_geometry=config.preserve_way_geometry,
                 way_cell_refine_max_depth=config.way_cell_refine_max_depth,
             )
@@ -205,6 +209,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--v-max-mph", type=float, default=35.0)
     p.add_argument("--floor-speed-source", default="osm_median", choices=["vmax", "osm_median"])
     p.add_argument("--min-osm-speed-mph", type=float, default=10.0 / hnetx.KM_PER_MILE)
+    p.add_argument("--route-weight-attr", default="travel_time_route")
+    p.add_argument("--route-floor-penalty-weight", type=float, default=0.35)
     p.add_argument("--no-step-floor", action="store_true")
     p.add_argument("--no-preserve-way-geometry", action="store_true")
     p.add_argument("--way-refine-max-depth", type=int, default=18)
@@ -226,6 +232,8 @@ if __name__ == "__main__":
         v_max_mph=float(args.v_max_mph),
         floor_speed_source=str(args.floor_speed_source),
         min_osm_speed_mph=float(args.min_osm_speed_mph),
+        route_weight_attr=str(args.route_weight_attr),
+        route_floor_penalty_weight=float(args.route_floor_penalty_weight),
         preserve_way_geometry=not bool(args.no_preserve_way_geometry),
         way_cell_refine_max_depth=int(args.way_refine_max_depth),
         max_pairs=int(args.max_pairs) if args.max_pairs is not None else None,
