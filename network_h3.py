@@ -207,6 +207,8 @@ def build_h3_travel_graph_from_osm(
     combine_parallel:
       - "min" keeps the smallest travel_time for an H3 adjacency across multiple roads
       - "mean" averages (usually not recommended for fastest-path travel times)
+      - "p25" uses the 25th percentile of observed travel_time candidates for an
+        adjacency (faster-path bias while still using more than a single minimum)
 
     enforce_min_step_time (Variant A):
       - Applies a per-adjacency time floor based on H3 centroid distance:
@@ -244,8 +246,8 @@ def build_h3_travel_graph_from_osm(
         default_kph=10.0,
     )
 
-    if combine_parallel not in {"min", "mean"}:
-        raise ValueError("combine_parallel must be one of: 'min', 'mean'")
+    if combine_parallel not in {"min", "mean", "p25"}:
+        raise ValueError("combine_parallel must be one of: 'min', 'mean', 'p25'")
     if floor_speed_source not in {"vmax", "osm_median"}:
         raise ValueError("floor_speed_source must be one of: 'vmax', 'osm_median'")
     if v_max_kph_value <= 0:
@@ -428,8 +430,10 @@ def build_h3_travel_graph_from_osm(
     for (a, b), ws in pair_to_weights.items():
         if combine_parallel == "min":
             w_out = float(np.min(ws))
-        else:
+        elif combine_parallel == "mean":
             w_out = float(np.mean(ws))
+        else:
+            w_out = float(np.percentile(ws, 25.0))
         observed_w = float(w_out)
         dist_m = _centroid_distance_m(a, b)
         osm_speed_median_kph: Optional[float] = None

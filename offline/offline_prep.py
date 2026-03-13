@@ -201,7 +201,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--resolutions", default="7,8,9,10", help="Comma-separated H3 resolutions.")
     p.add_argument("--buffer-miles", type=float, default=15.0)
     p.add_argument("--sample-miles", type=float, default=0.25)
-    p.add_argument("--combine-parallel", default="mean", choices=["min", "mean"])
+    p.add_argument("--combine-parallel", default="mean", choices=["min", "mean", "p25"])
     p.add_argument("--v-max-mph", type=float, default=35.0)
     p.add_argument("--floor-speed-source", default="osm_median", choices=["vmax", "osm_median"])
     p.add_argument("--min-osm-speed-mph", type=float, default=10.0 / hnetx.KM_PER_MILE)

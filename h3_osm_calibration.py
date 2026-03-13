@@ -27,7 +27,7 @@ class CalibrationConfig:
     weight_attr: str = "travel_time"
     bbox_buffer_miles: float = 15.0
     sample_miles: float = 0.1
-    combine_parallel: str = "mean"
+    combine_parallel: str = "p25"
     enforce_min_step_time: bool = True
     v_max_mph: float = 35.0
     floor_speed_source: str = "osm_median"
@@ -494,7 +494,7 @@ if __name__ == "__main__":
     ox.settings.use_cache = True
     ox.settings.log_console = True
 
-    vintage = 1
+    vintage = 2
     output_dir = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
     csv_file = os.path.join(os.path.dirname(__file__), "osm_scale_calibration.csv")
     output_gpkg = os.path.join(output_dir, f"h3_osm_calibration_vintage{vintage}.gpkg")
@@ -503,7 +503,7 @@ if __name__ == "__main__":
         h3_resolutions=(7, 8, 9, 10),
         bbox_buffer_miles=15.0,
         sample_miles=0.1,
-        combine_parallel="mean",
+        combine_parallel="p25",
         enforce_min_step_time=True,
         v_max_mph=35.0,
         floor_speed_source="osm_median",
