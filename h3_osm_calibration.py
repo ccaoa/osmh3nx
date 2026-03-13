@@ -11,7 +11,8 @@ import networkx as nx
 import osmnx as ox
 import pandas as pd
 from shapely import wkt
-from shapely.geometry import Point, Polygon
+from shapely.geometry import LineString, Point, Polygon
+from shapely.ops import unary_union
 
 try:
     from . import network_h3 as hnetx
@@ -35,6 +36,7 @@ class CalibrationConfig:
     min_osm_speed_mph: float = 10.0 / hnetx.KM_PER_MILE
     route_weight_attr: str = "travel_time_route"
     route_floor_penalty_weight: float = 0.35
+    shape_corridor_meters: float = 250.0
     snap_k: int = 10
 
 
@@ -122,6 +124,101 @@ def _safe_percent_delta(estimate: Optional[float], truth: Optional[float]) -> Op
     if truth_val == 0.0:
         return None
     return (float(estimate) - truth_val) / truth_val * 100.0
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _harmonic_mean_ratio(a: Optional[float], b: Optional[float]) -> Optional[float]:
+    if a is None or b is None:
+        return None
+    a_val = float(a)
+    b_val = float(b)
+    if a_val <= 0 or b_val <= 0:
+        return 0.0
+    return float((2.0 * a_val * b_val) / (a_val + b_val))
+
+
+def _default_shape_metrics(*, status: str, corridor_m: float) -> Dict[str, Any]:
+    return {
+        "shape_status": status,
+        "shape_osm_corridor_m": float(corridor_m),
+        "osm_covered_by_h3_ratio": None,
+        "osm_covered_by_h3_pct": None,
+        "h3_within_osm_corridor_ratio": None,
+        "h3_within_osm_corridor_pct": None,
+        "shape_f1_ratio": None,
+        "shape_f1_pct": None,
+        "shape_hausdorff_m": None,
+    }
+
+
+def _compute_shape_metrics(
+    *,
+    osm_route_wgs84: Optional[LineString],
+    h3_route_wgs84: Optional[LineString],
+    h3_path_cells: Sequence[str],
+    origin_wgs84: Point,
+    destination_wgs84: Point,
+    corridor_m: float,
+) -> Dict[str, Any]:
+    if corridor_m <= 0:
+        return _default_shape_metrics(status="error:bad_corridor", corridor_m=corridor_m)
+    if osm_route_wgs84 is None or h3_route_wgs84 is None:
+        return _default_shape_metrics(status="missing_geometry", corridor_m=corridor_m)
+    if len(h3_path_cells) < 2:
+        return _default_shape_metrics(status="short_h3_path", corridor_m=corridor_m)
+
+    try:
+        h3_union_wgs84 = unary_union([_h3_cell_to_polygon(c) for c in h3_path_cells])
+
+        seed = gpd.GeoDataFrame(
+            {"kind": ["origin", "destination"]},
+            geometry=[origin_wgs84, destination_wgs84],
+            crs="EPSG:4326",
+        )
+        metric_crs = seed.estimate_utm_crs() or "EPSG:3857"
+
+        geoms_wgs84 = gpd.GeoDataFrame(
+            {"kind": ["osm_line", "h3_line", "h3_cells"]},
+            geometry=[osm_route_wgs84, h3_route_wgs84, h3_union_wgs84],
+            crs="EPSG:4326",
+        )
+        geoms_metric = geoms_wgs84.to_crs(metric_crs)
+
+        osm_line_m = geoms_metric.loc[geoms_metric["kind"] == "osm_line", "geometry"].iloc[0]
+        h3_line_m = geoms_metric.loc[geoms_metric["kind"] == "h3_line", "geometry"].iloc[0]
+        h3_cells_m = geoms_metric.loc[geoms_metric["kind"] == "h3_cells", "geometry"].iloc[0]
+
+        osm_len_m = float(osm_line_m.length)
+        h3_len_m = float(h3_line_m.length)
+        if osm_len_m <= 0 or h3_len_m <= 0:
+            return _default_shape_metrics(status="zero_length", corridor_m=corridor_m)
+
+        osm_covered_len_m = float(osm_line_m.intersection(h3_cells_m).length)
+        osm_covered_ratio = _clamp01(osm_covered_len_m / osm_len_m)
+
+        osm_corridor = osm_line_m.buffer(float(corridor_m))
+        h3_in_corridor_len_m = float(h3_line_m.intersection(osm_corridor).length)
+        h3_in_corridor_ratio = _clamp01(h3_in_corridor_len_m / h3_len_m)
+
+        f1_ratio = _harmonic_mean_ratio(osm_covered_ratio, h3_in_corridor_ratio)
+        hausdorff_m = float(h3_line_m.hausdorff_distance(osm_line_m))
+
+        return {
+            "shape_status": "ok",
+            "shape_osm_corridor_m": float(corridor_m),
+            "osm_covered_by_h3_ratio": osm_covered_ratio,
+            "osm_covered_by_h3_pct": float(osm_covered_ratio * 100.0),
+            "h3_within_osm_corridor_ratio": h3_in_corridor_ratio,
+            "h3_within_osm_corridor_pct": float(h3_in_corridor_ratio * 100.0),
+            "shape_f1_ratio": f1_ratio,
+            "shape_f1_pct": float(f1_ratio * 100.0) if f1_ratio is not None else None,
+            "shape_hausdorff_m": hausdorff_m,
+        }
+    except Exception as exc:
+        return _default_shape_metrics(status=f"error:{type(exc).__name__}", corridor_m=corridor_m)
 
 
 def solve_h3_route_for_od(
@@ -264,6 +361,7 @@ def run_h3_osm_calibration(
         osm_status = "ok"
         osm_time_sec: Optional[float] = None
         osm_miles: Optional[float] = None
+        osm_geometry: Optional[LineString] = None
         osm_graph_nodes: Optional[int] = None
         osm_graph_edges: Optional[int] = None
         G_osm: Optional[nx.MultiDiGraph] = None
@@ -291,6 +389,7 @@ def run_h3_osm_calibration(
             )
             osm_time_sec = float(osm_result.travel_time_sec)
             osm_miles = float(osm_result.length_m / hnetx.METERS_PER_MILE)
+            osm_geometry = osm_result.geometry
             osm_route_rows.append(
                 {
                     "pair_id": pair_id,
@@ -318,6 +417,7 @@ def run_h3_osm_calibration(
             h3_status = "ok"
             h3_time_sec: Optional[float] = None
             h3_miles: Optional[float] = None
+            shape_metrics = _default_shape_metrics(status="not_computed", corridor_m=config.shape_corridor_meters)
             h3_graph_nodes: Optional[int] = None
             h3_graph_edges: Optional[int] = None
             h3_cells_count: Optional[int] = None
@@ -328,6 +428,10 @@ def run_h3_osm_calibration(
 
             if G_osm is None:
                 h3_status = "osm_graph_missing"
+                shape_metrics = _default_shape_metrics(
+                    status="osm_graph_missing",
+                    corridor_m=config.shape_corridor_meters,
+                )
             else:
                 try:
                     H_h3 = hnetx.build_h3_travel_graph_from_osm(
@@ -365,6 +469,20 @@ def run_h3_osm_calibration(
                         h3_miles = float(h3_result["travel_miles"])
                         path_cells = list(h3_result["path_cells"])
                         h3_cells_count = len(path_cells)
+                        if osm_status == "ok" and osm_geometry is not None:
+                            shape_metrics = _compute_shape_metrics(
+                                osm_route_wgs84=osm_geometry,
+                                h3_route_wgs84=h3_result["geometry"],
+                                h3_path_cells=path_cells,
+                                origin_wgs84=origin,
+                                destination_wgs84=destination,
+                                corridor_m=config.shape_corridor_meters,
+                            )
+                        else:
+                            shape_metrics = _default_shape_metrics(
+                                status="osm_not_ok",
+                                corridor_m=config.shape_corridor_meters,
+                            )
                         h3_route_rows.append(
                             {
                                 "pair_id": pair_id,
@@ -402,10 +520,23 @@ def run_h3_osm_calibration(
                                     "geometry": _h3_cell_to_polygon(cell),
                                 }
                             )
+                    else:
+                        shape_metrics = _default_shape_metrics(
+                            status=f"h3_{h3_result['status']}",
+                            corridor_m=config.shape_corridor_meters,
+                        )
                 except nx.NetworkXNoPath:
                     h3_status = "no_path"
+                    shape_metrics = _default_shape_metrics(
+                        status="h3_no_path",
+                        corridor_m=config.shape_corridor_meters,
+                    )
                 except Exception as exc:
                     h3_status = f"error:{type(exc).__name__}"
+                    shape_metrics = _default_shape_metrics(
+                        status=f"h3_error:{type(exc).__name__}",
+                        corridor_m=config.shape_corridor_meters,
+                    )
 
             metrics_rows.append(
                 {
@@ -436,6 +567,7 @@ def run_h3_osm_calibration(
                     "h3_destination_cell": destination_cell,
                     "h3_origin_cell_snap": origin_cell_snap,
                     "h3_destination_cell_snap": destination_cell_snap,
+                    **shape_metrics,
                 }
             )
 
@@ -515,6 +647,7 @@ if __name__ == "__main__":
         min_osm_speed_mph=10.0 / hnetx.KM_PER_MILE,
         route_weight_attr="travel_time_route",
         route_floor_penalty_weight=0.35,
+        shape_corridor_meters=250.0,
         snap_k=10,
     )
 
