@@ -646,7 +646,7 @@ if __name__ == "__main__":
 
     cfg = CalibrationConfig(
         h3_resolutions=(7, 8, 9, 10),
-        bbox_buffer_miles=15.0,
+        bbox_buffer_miles=5.0,
         sample_miles=0.1,
         combine_parallel="min",
         enforce_min_step_time=True,
