@@ -126,6 +126,12 @@ def _safe_percent_delta(estimate: Optional[float], truth: Optional[float]) -> Op
     return (float(estimate) - truth_val) / truth_val * 100.0
 
 
+def _safe_abs(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    return abs(float(value))
+
+
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
 
@@ -554,10 +560,12 @@ def run_h3_osm_calibration(
                     "h3_travel_time_sec": h3_time_sec,
                     "time_error_sec": (h3_time_sec - osm_time_sec) if h3_time_sec is not None and osm_time_sec is not None else None,
                     "time_error_pct": _safe_percent_delta(h3_time_sec, osm_time_sec),
+                    "abs_time_error": _safe_abs(_safe_percent_delta(h3_time_sec, osm_time_sec)),
                     "osm_travel_miles": osm_miles,
                     "h3_travel_miles": h3_miles,
                     "distance_error_miles": (h3_miles - osm_miles) if h3_miles is not None and osm_miles is not None else None,
                     "distance_error_pct": _safe_percent_delta(h3_miles, osm_miles),
+                    "abs_dist_error": _safe_abs(_safe_percent_delta(h3_miles, osm_miles)),
                     "osm_graph_nodes": osm_graph_nodes,
                     "osm_graph_edges": osm_graph_edges,
                     "h3_graph_nodes": h3_graph_nodes,
