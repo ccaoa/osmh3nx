@@ -1,0 +1,67 @@
+# -------------------------------------------
+# Core text normalization rules
+# -------------------------------------------
+
+# Normalize all text files using core.autocrlf behavior
+* text=auto
+
+# Enforce LF (Unix-style) endings for code and config files
+*.py   text eol=lf
+*.sh   text eol=lf
+*.r    text eol=lf
+*.R    text eol=lf
+*.Rmd text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+# GeoJSONs should be treated like JSON (text, not binary)
+*.geojson text eol=lf
+*.toml text eol=lf
+*.md   text eol=lf
+*.csv  text eol=lf
+*.js      text eol=lf
+*.jsx     text eol=lf
+*.java    text eol=lf
+# ESRI Arcade scripts (JS-like)
+*.arcade  text eol=lf
+*.toml    text eol=lf
+*.html text eol=lf
+*.xml   text eol=lf
+# KML = Keyhole Markup Language (Google Earth)
+*.kml   text eol=lf
+*.rss   text eol=lf
+*.xsd   text eol=lf
+# Requirement input files (used with pip-compile)
+*.in text eol=lf
+
+# Enforce CRLF for Windows-native scripts
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+
+# -------------------------------------------
+# Binary files — do not attempt to normalize or diff
+# -------------------------------------------
+
+# Images
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.svg  binary
+
+# Office and proprietary formats (binary)
+*.docx binary
+*.xlsx binary
+*.pptx binary
+*.pdf  binary
+*.zip  binary
+*.7z   binary
+
+# GIS files (common vector/raster formats — treat as binary)
+*.shp  binary
+*.dbf  binary
+*.prj  binary
+*.tif  binary
+*.tiff binary
+*.gpkg binary

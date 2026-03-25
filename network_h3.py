@@ -193,6 +193,10 @@ def build_h3_travel_graph_from_osm(
     floor_speed_source: str = "vmax",
     min_osm_speed_mph: Optional[float] = None,
     min_osm_speed_kph: Optional[float] = None,
+    preserve_way_geometry: bool = True,
+    way_cell_refine_max_depth: int = 18,
+    route_weight_attr: str = "travel_time_route",
+    route_floor_penalty_weight: float = 0.35,
 ) -> nx.Graph:
     """
     Build an H3-level undirected travel graph by sampling along each OSM edge geometry.
@@ -205,6 +209,8 @@ def build_h3_travel_graph_from_osm(
     combine_parallel:
       - "min" keeps the smallest travel_time for an H3 adjacency across multiple roads
       - "mean" averages (usually not recommended for fastest-path travel times)
+      - "p25" uses the 25th percentile of observed travel_time candidates for an
+        adjacency (faster-path bias while still using more than a single minimum)
 
     enforce_min_step_time (Variant A):
       - Applies a per-adjacency time floor based on H3 centroid distance:
@@ -216,6 +222,25 @@ def build_h3_travel_graph_from_osm(
       - "osm_median": speed_mps is derived from the median OSM speed_kph observed for that
         adjacency, clamped to [min_osm_speed_mph, v_max_mph] (or the kph equivalents)
         (keeps OSM connectivity and introduces a local speed signal)
+
+    preserve_way_geometry:
+      - True: derive crossed H3 cells from the edge geometry itself using recursive midpoint
+        refinement so transitions follow the way shape.
+      - False: use sampled cells directly, with per-jump grid-path expansion fallback.
+
+    way_cell_refine_max_depth:
+      - maximum recursion depth for geometry-driven midpoint refinement when
+        preserve_way_geometry=True.
+
+    route_weight_attr:
+      - edge attribute name to store blended route-choice cost used by Dijkstra.
+
+    route_floor_penalty_weight:
+      - weight in [0, 1] controlling how strongly floor uplift impacts the
+        blended route-choice cost:
+        route_cost = observed + w * max(0, floored - observed)
+      - 0.0 ignores floor in route-choice cost (fastest-path bias)
+      - 1.0 equals strict floored behavior
     """
     sample_meters_value = _resolve_distance_meters(
         miles=sample_miles,
@@ -233,14 +258,16 @@ def build_h3_travel_graph_from_osm(
         default_kph=10.0,
     )
 
-    if combine_parallel not in {"min", "mean"}:
-        raise ValueError("combine_parallel must be one of: 'min', 'mean'")
+    if combine_parallel not in {"min", "mean", "p25"}:
+        raise ValueError("combine_parallel must be one of: 'min', 'mean', 'p25'")
     if floor_speed_source not in {"vmax", "osm_median"}:
         raise ValueError("floor_speed_source must be one of: 'vmax', 'osm_median'")
     if v_max_kph_value <= 0:
         raise ValueError("v_max_kph must be > 0")
     if min_osm_speed_kph_value <= 0:
         raise ValueError("min_osm_speed_kph must be > 0")
+    if not (0.0 <= float(route_floor_penalty_weight) <= 1.0):
+        raise ValueError("route_floor_penalty_weight must be in [0, 1].")
 
     # Project graph to a metric CRS so sampling is in meters
     Gp = ox.project_graph(G_osm)
@@ -270,6 +297,93 @@ def build_h3_travel_graph_from_osm(
     def _h3_cell_from_xy(x: float, y: float) -> str:
         lng, lat = to_wgs84.transform(x, y)
         return h3.latlng_to_cell(lat, lng, h3_res)
+
+    def _grid_distance(a: str, b: str) -> Optional[int]:
+        try:
+            return int(h3.grid_distance(a, b))
+        except Exception:
+            return None
+
+    def _fallback_grid_path(a: str, b: str) -> List[str]:
+        try:
+            path = list(h3.grid_path_cells(a, b))
+            if len(path) >= 2:
+                return path
+        except Exception:
+            pass
+        return [a, b]
+
+    def _cells_between_distances(
+        line: LineString,
+        d0: float,
+        d1: float,
+        c0: str,
+        c1: str,
+        depth: int,
+    ) -> List[str]:
+        if c0 == c1:
+            return [c0]
+
+        gd = _grid_distance(c0, c1)
+        if gd == 1:
+            return [c0, c1]
+
+        if depth >= int(way_cell_refine_max_depth):
+            return _fallback_grid_path(c0, c1)
+
+        mid = (float(d0) + float(d1)) / 2.0
+        if not (d0 < mid < d1):
+            return _fallback_grid_path(c0, c1)
+
+        mid_pt = line.interpolate(mid)
+        c_mid = _h3_cell_from_xy(float(mid_pt.x), float(mid_pt.y))
+
+        left = _cells_between_distances(line, d0, mid, c0, c_mid, depth + 1)
+        right = _cells_between_distances(line, mid, d1, c_mid, c1, depth + 1)
+        if not left:
+            return right
+        if not right:
+            return left
+        if left[-1] == right[0]:
+            return left + right[1:]
+        return left + right
+
+    def _trace_cells_along_line(line: LineString, dists: np.ndarray) -> List[str]:
+        sampled: List[Tuple[float, str]] = []
+        last_cell: Optional[str] = None
+        for d in dists.tolist():
+            pt = line.interpolate(float(d))
+            c = _h3_cell_from_xy(float(pt.x), float(pt.y))
+            if c != last_cell:
+                sampled.append((float(d), c))
+                last_cell = c
+
+        if len(sampled) < 2:
+            return [sampled[0][1]] if sampled else []
+
+        cells: List[str] = [sampled[0][1]]
+        for (d0, c0), (d1, c1) in zip(sampled[:-1], sampled[1:]):
+            if c0 == c1:
+                continue
+            if preserve_way_geometry:
+                seg_cells = _cells_between_distances(line, d0, d1, c0, c1, 0)
+            else:
+                seg_cells = _fallback_grid_path(c0, c1) if _grid_distance(c0, c1) not in {0, 1} else [c0, c1]
+            if not seg_cells:
+                continue
+            if cells[-1] == seg_cells[0]:
+                cells.extend(seg_cells[1:])
+            else:
+                cells.extend(seg_cells)
+
+        # Consecutive dedupe for robustness after fallback stitching.
+        deduped: List[str] = []
+        prev: Optional[str] = None
+        for c in cells:
+            if c != prev:
+                deduped.append(c)
+                prev = c
+        return deduped
 
     geod = pyproj.Geod(ellps="WGS84")
 
@@ -306,51 +420,34 @@ def build_h3_travel_graph_from_osm(
         # Sample along the line at segment boundaries
         dists = np.linspace(0.0, length_m, n_segs + 1)
 
-        # Convert sampled points to H3 cells, dedupe consecutive repeats
-        cells: List[str] = []
-        last: Optional[str] = None
-        for d in dists:
-            pt = line.interpolate(d)
-            c = _h3_cell_from_xy(float(pt.x), float(pt.y))
-            if c != last:
-                cells.append(c)
-                last = c
+        # Convert sampled points to H3 cells and refine transitions so crossed cells
+        # follow way geometry instead of geometric shortcuts through hex space.
+        cells = _trace_cells_along_line(line, dists)
 
         if len(cells) < 2:
             continue
 
-        # Split edge_time across sampled steps between successive cells.
-        # If a sampled jump spans multiple H3 cells, expand it so intermediate
-        # cells are explicitly represented in the graph.
+        # Split edge_time across traced steps between successive cells.
         sampled_step_time = edge_time / float(len(cells) - 1)
         edge_speed_kph = _coerce_speed_to_kph(data.get("speed_kph"))
 
         for a, b in zip(cells[:-1], cells[1:]):
             if a == b:
                 continue
-            try:
-                expanded_cells = list(h3.grid_path_cells(a, b))
-            except Exception:
-                expanded_cells = [a, b]
-            if len(expanded_cells) < 2:
-                continue
-
-            expanded_step_time = sampled_step_time / float(len(expanded_cells) - 1)
-            for x_cell, y_cell in zip(expanded_cells[:-1], expanded_cells[1:]):
-                if x_cell == y_cell:
-                    continue
-                x, y = (x_cell, y_cell) if x_cell < y_cell else (y_cell, x_cell)
-                key = (x, y)
-                pair_to_weights.setdefault(key, []).append(expanded_step_time)
-                if edge_speed_kph is not None:
-                    pair_to_speeds_kph.setdefault(key, []).append(edge_speed_kph)
+            x, y = (a, b) if a < b else (b, a)
+            key = (x, y)
+            pair_to_weights.setdefault(key, []).append(sampled_step_time)
+            if edge_speed_kph is not None:
+                pair_to_speeds_kph.setdefault(key, []).append(edge_speed_kph)
 
     # Combine parallel weights into final graph edges
     for (a, b), ws in pair_to_weights.items():
         if combine_parallel == "min":
             w_out = float(np.min(ws))
-        else:
+        elif combine_parallel == "mean":
             w_out = float(np.mean(ws))
+        else:
+            w_out = float(np.percentile(ws, 25.0))
         observed_w = float(w_out)
         dist_m = _centroid_distance_m(a, b)
         osm_speed_median_kph: Optional[float] = None
@@ -358,6 +455,7 @@ def build_h3_travel_graph_from_osm(
             osm_speed_median_kph = float(np.median(pair_to_speeds_kph[(a, b)]))
         speed_kph_for_floor: Optional[float] = None
         min_step_time: Optional[float] = None
+        floored_w = float(observed_w)
         floor_applied = False
 
         if enforce_min_step_time:
@@ -372,24 +470,35 @@ def build_h3_travel_graph_from_osm(
                 )
             speed_mps = speed_kph_for_floor / 3.6
             min_step_time = dist_m / speed_mps
-            w_out = max(w_out, float(min_step_time))
-            floor_applied = bool(w_out > observed_w + 1e-9)
+            floored_w = max(floored_w, float(min_step_time))
+            floor_applied = bool(floored_w > observed_w + 1e-9)
+
+        route_w = observed_w + float(route_floor_penalty_weight) * max(0.0, floored_w - observed_w)
+
+        edge_attrs: Dict[str, Any] = {
+            weight_attr: float(floored_w),
+            "observed_step_time_raw_sec": observed_w,
+            "step_time_floored_sec": float(floored_w),
+            "step_time_route_sec": float(route_w),
+            "route_floor_penalty_weight": float(route_floor_penalty_weight),
+            "centroid_dist_m": float(dist_m),
+            "centroid_dist_miles": _meters_to_miles(dist_m),
+            "osm_median_speed_kph": osm_speed_median_kph,
+            "osm_median_speed_mph": _kph_to_mph(osm_speed_median_kph) if osm_speed_median_kph is not None else None,
+            "floor_speed_kph": speed_kph_for_floor,
+            "floor_speed_mph": _kph_to_mph(speed_kph_for_floor) if speed_kph_for_floor is not None else None,
+            "min_step_time_sec": min_step_time,
+            "floor_applied": floor_applied,
+        }
+        if route_weight_attr == weight_attr:
+            edge_attrs[weight_attr] = float(route_w)
+        else:
+            edge_attrs[route_weight_attr] = float(route_w)
 
         H.add_edge(
             a,
             b,
-            **{
-                weight_attr: float(w_out),
-                "observed_step_time_raw_sec": observed_w,
-                "centroid_dist_m": float(dist_m),
-                "centroid_dist_miles": _meters_to_miles(dist_m),
-                "osm_median_speed_kph": osm_speed_median_kph,
-                "osm_median_speed_mph": _kph_to_mph(osm_speed_median_kph) if osm_speed_median_kph is not None else None,
-                "floor_speed_kph": speed_kph_for_floor,
-                "floor_speed_mph": _kph_to_mph(speed_kph_for_floor) if speed_kph_for_floor is not None else None,
-                "min_step_time_sec": min_step_time,
-                "floor_applied": floor_applied,
-            },
+            **edge_attrs,
         )
 
     return H
@@ -460,7 +569,7 @@ def print_h3_route_breakdown(
 
     print("Route breakdown (per H3 step):")
     print(
-        f"idx | from_cell -> to_cell {' '*len('2a8ac61dfffff')} | dist_mi | time_sec | implied_mph | raw_sec | floor_min_sec | floor_speed_mph | osm_median_mph | floor_applied"
+        f"idx | from_cell -> to_cell {' '*len('2a8ac61dfffff')} | dist_mi | time_sec | implied_mph | raw_sec | route_sec | floor_min_sec | floor_speed_mph | osm_median_mph | floor_applied"
     )
 
     total_time = 0.0
@@ -480,6 +589,7 @@ def print_h3_route_breakdown(
             dist_m = ed.get("centroid_dist_m")
             dist_miles = _meters_to_miles(float(dist_m)) if dist_m is not None else np.nan
         raw_sec = ed.get("observed_step_time_raw_sec")
+        route_sec = ed.get("step_time_route_sec")
         min_floor_sec = ed.get("min_step_time_sec")
         floor_speed_mph = ed.get("floor_speed_mph")
         if floor_speed_mph is None and ed.get("floor_speed_kph") is not None:
@@ -498,6 +608,7 @@ def print_h3_route_breakdown(
             f"{idx:03d} | {a} -> {b} | "
             f"{dist_miles:8.3f} | {time_sec:8.1f} | {implied_mph:10.2f} | "
             f"{float(raw_sec) if raw_sec is not None else np.nan:7.1f} | "
+            f"{float(route_sec) if route_sec is not None else np.nan:9.1f} | "
             f"{float(min_floor_sec) if min_floor_sec is not None else np.nan:12.1f} | "
             f"{float(floor_speed_mph) if floor_speed_mph is not None else np.nan:15.1f} | "
             f"{float(osm_median_mph) if osm_median_mph is not None else np.nan:14.1f} | "

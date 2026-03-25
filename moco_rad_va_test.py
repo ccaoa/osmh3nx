@@ -62,12 +62,14 @@ def demo_radford_montgomery_pipeline(
         G_osm,
         h3_res=h3_res,
         weight_attr="travel_time",
-        combine_parallel="mean",
-        sample_miles=15,
+        combine_parallel="min",
+        sample_miles=0.1,
         enforce_min_step_time=True,
-        v_max_mph=35, # 60.0 / hnetx.KM_PER_MILE,  # keeps old 60 kph calibration behavior
-        floor_speed_source="osm_median",  # use "vmax" for strict Variant A floor behavior
+        v_max_mph=50,
+        floor_speed_source="vmax",
         min_osm_speed_mph=10.0 / hnetx.KM_PER_MILE,  # keeps old 10 kph lower clamp behavior
+        route_weight_attr="travel_time_route",
+        route_floor_penalty_weight=0.35,
     )
     # TODO delete test prints; used for debugging
     print("H_h3 nodes:", H_h3.number_of_nodes())
@@ -125,7 +127,7 @@ if __name__ == "__main__":
         out_col="nearest_tgt_id",
         h3_graph=H_h3,
         h3_res=int(resolution_h3_cell),
-        weight_attr="travel_time",
+        weight_attr="travel_time_route",
         out_path_col=pathcol
     )
 
