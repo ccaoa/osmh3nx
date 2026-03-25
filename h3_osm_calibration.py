@@ -38,6 +38,8 @@ class CalibrationConfig:
     route_floor_penalty_weight: float = 0.35
     shape_corridor_meters: float = 100.0
     snap_k: int = 10
+    osm_cache_dir: Optional[str] = "cache"
+    osm_force_refresh: bool = False
 
 
 def _required_columns() -> List[str]:
@@ -373,7 +375,11 @@ def run_h3_osm_calibration(
         G_osm: Optional[nx.MultiDiGraph] = None
 
         try:
-            G_osm = onetx.download_osm_drive_graph_for_polygon(buffer_poly)
+            G_osm = onetx.download_osm_drive_graph_for_polygon(
+                buffer_poly,
+                cache_dir=config.osm_cache_dir,
+                force_refresh=config.osm_force_refresh,
+            )
             osm_graph_nodes = G_osm.number_of_nodes()
             osm_graph_edges = G_osm.number_of_edges()
 
