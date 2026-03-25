@@ -639,7 +639,7 @@ if __name__ == "__main__":
     ox.settings.use_cache = True
     ox.settings.log_console = True
 
-    vintage = 4
+    vintage = 5
     output_dir = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
     csv_file = os.path.join(os.path.dirname(__file__), "osm_scale_calibration.csv")
     output_gpkg = os.path.join(output_dir, f"h3_osm_calibration_vintage{vintage}.gpkg")
@@ -654,7 +654,7 @@ if __name__ == "__main__":
         floor_speed_source="vmax",
         min_osm_speed_mph=10.0 / hnetx.KM_PER_MILE,
         route_weight_attr="travel_time_route",
-        route_floor_penalty_weight=0.35,
+        route_floor_penalty_weight=0.0,
         shape_corridor_meters=100.0,
         snap_k=10,
     )
