@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from math import inf
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import geopandas as gpd
@@ -15,6 +17,26 @@ METERS_PER_MILE: float = 1609.344
 
 def miles_to_meters(miles: float) -> float:
     return float(miles) * METERS_PER_MILE
+
+
+def _default_cache_dir() -> Path:
+    return Path(__file__).resolve().parent / "cache"
+
+
+def _graph_cache_key(
+    *,
+    polygon_wgs84: Polygon,
+    simplify: bool,
+    network_type: str,
+) -> str:
+    key_raw = "|".join(
+        [
+            f"network_type={network_type}",
+            f"simplify={int(bool(simplify))}",
+            polygon_wgs84.wkt,
+        ]
+    )
+    return hashlib.sha1(key_raw.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -72,13 +94,41 @@ def download_osm_drive_graph_for_polygon(
     polygon_wgs84: Polygon,
     *,
     simplify: bool = True,
+    cache_dir: Optional[str] = "cache",
+    force_refresh: bool = False,
 ) -> nx.MultiDiGraph:
     """
     Download and enrich a drivable OSM network for a polygon.
+    Uses GraphML cache when available.
     """
-    G = ox.graph_from_polygon(polygon_wgs84, network_type="drive", simplify=simplify)
-    G = ox.add_edge_speeds(G)
-    G = ox.add_edge_travel_times(G)
+    network_type = "drive"
+    graph_key = _graph_cache_key(
+        polygon_wgs84=polygon_wgs84,
+        simplify=simplify,
+        network_type=network_type,
+    )
+    cache_path: Optional[Path] = None
+    if cache_dir is not None:
+        base_cache = Path(cache_dir) if cache_dir else _default_cache_dir()
+        if not base_cache.is_absolute():
+            base_cache = Path(__file__).resolve().parent / base_cache
+        base_cache.mkdir(parents=True, exist_ok=True)
+        cache_path = base_cache / f"osm_drive_{graph_key}.graphml"
+
+    if cache_path is not None and cache_path.exists() and not force_refresh:
+        G = ox.load_graphml(filepath=str(cache_path))
+    else:
+        G = ox.graph_from_polygon(polygon_wgs84, network_type=network_type, simplify=simplify)
+        G = ox.add_edge_speeds(G)
+        G = ox.add_edge_travel_times(G)
+        if cache_path is not None:
+            ox.save_graphml(G, filepath=str(cache_path))
+
+    # Ensure required attrs exist on loaded graphs from any older cache versions.
+    if not all("speed_kph" in data for _, _, _, data in G.edges(keys=True, data=True)):
+        G = ox.add_edge_speeds(G)
+    if not all("travel_time" in data for _, _, _, data in G.edges(keys=True, data=True)):
+        G = ox.add_edge_travel_times(G)
     return G
 
 
