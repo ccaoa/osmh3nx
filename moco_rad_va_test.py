@@ -62,7 +62,7 @@ def demo_radford_montgomery_pipeline(
         G_osm,
         h3_res=h3_res,
         weight_attr="travel_time",
-        combine_parallel="p25",
+        combine_parallel="min",
         sample_miles=0.1,
         enforce_min_step_time=True,
         v_max_mph=50,
