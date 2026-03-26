@@ -36,10 +36,12 @@ class CalibrationConfig:
     min_osm_speed_mph: float = 10.0 / hnetx.KM_PER_MILE
     route_weight_attr: str = "travel_time_route"
     route_floor_penalty_weight: float = 0.35
+    report_weight_attr: str = "travel_time_postcalibrated"
+    report_floor_penalty_weight: float = 1.0
     shape_corridor_meters: float = 100.0
     snap_k: int = 10
     osm_cache_dir: Optional[str] = "cache"
-    osm_force_refresh: bool = True  # False  #
+    osm_force_refresh: bool = False  #  True  #
 
 
 def _required_columns() -> List[str]:
@@ -236,6 +238,7 @@ def solve_h3_route_for_od(
     destination_wgs84: Point,
     h3_res: int,
     weight_attr: str,
+    report_weight_attr: str,
     snap_k: int,
 ) -> Dict[str, Any]:
     origin_cell = h3.latlng_to_cell(float(origin_wgs84.y), float(origin_wgs84.x), h3_res)
@@ -249,6 +252,7 @@ def solve_h3_route_for_od(
             "status": "snap_failed",
             "path_cells": None,
             "travel_time_sec": None,
+            "travel_time_postcalibrated_sec": None,
             "travel_miles": None,
             "origin_cell": origin_cell,
             "destination_cell": destination_cell,
@@ -271,12 +275,18 @@ def solve_h3_route_for_od(
             weight=weight_attr,
         )
     )
+    travel_time_postcalibrated_sec = hnetx.path_weight_sum(
+        h3_graph,
+        path_cells,
+        weight_attr=report_weight_attr,
+    )
     travel_miles = _h3_path_distance_miles(h3_graph, path_cells)
     geometry = hnetx.h3_path_to_linestring(list(path_cells))
     return {
         "status": "ok",
         "path_cells": list(path_cells),
         "travel_time_sec": float(travel_time_sec),
+        "travel_time_postcalibrated_sec": float(travel_time_postcalibrated_sec),
         "travel_miles": float(travel_miles),
         "origin_cell": origin_cell,
         "destination_cell": destination_cell,
@@ -428,6 +438,7 @@ def run_h3_osm_calibration(
         for h3_res in config.h3_resolutions:
             h3_status = "ok"
             h3_time_sec: Optional[float] = None
+            h3_time_postcalibrated_sec: Optional[float] = None
             h3_miles: Optional[float] = None
             shape_metrics = _default_shape_metrics(status="not_computed", corridor_m=config.shape_corridor_meters)
             h3_graph_nodes: Optional[int] = None
@@ -458,6 +469,8 @@ def run_h3_osm_calibration(
                         min_osm_speed_mph=config.min_osm_speed_mph,
                         route_weight_attr=config.route_weight_attr,
                         route_floor_penalty_weight=config.route_floor_penalty_weight,
+                        report_weight_attr=config.report_weight_attr,
+                        report_floor_penalty_weight=config.report_floor_penalty_weight,
                     )
                     h3_graph_nodes = H_h3.number_of_nodes()
                     h3_graph_edges = H_h3.number_of_edges()
@@ -468,6 +481,7 @@ def run_h3_osm_calibration(
                         destination_wgs84=destination,
                         h3_res=h3_res,
                         weight_attr=config.h3_weight_attr,
+                        report_weight_attr=config.report_weight_attr,
                         snap_k=config.snap_k,
                     )
                     h3_status = str(h3_result["status"])
@@ -478,6 +492,7 @@ def run_h3_osm_calibration(
 
                     if h3_result["status"] == "ok":
                         h3_time_sec = float(h3_result["travel_time_sec"])
+                        h3_time_postcalibrated_sec = float(h3_result["travel_time_postcalibrated_sec"])
                         h3_miles = float(h3_result["travel_miles"])
                         path_cells = list(h3_result["path_cells"])
                         h3_cells_count = len(path_cells)
@@ -512,6 +527,7 @@ def run_h3_osm_calibration(
                                 "h3_destination_cell_snap": destination_cell_snap,
                                 "h3_path": "|".join(path_cells),
                                 "h3_travel_time_sec": h3_time_sec,
+                                "h3_travel_time_postcalibrated_sec": h3_time_postcalibrated_sec,
                                 "h3_travel_miles": h3_miles,
                                 "geometry": h3_result["geometry"],
                             }
@@ -564,9 +580,13 @@ def run_h3_osm_calibration(
                     "status_h3": h3_status,
                     "osm_travel_time_sec": osm_time_sec,
                     "h3_travel_time_sec": h3_time_sec,
+                    "h3_travel_time_postcalibrated_sec": h3_time_postcalibrated_sec,
                     "time_error_sec": (h3_time_sec - osm_time_sec) if h3_time_sec is not None and osm_time_sec is not None else None,
                     "time_error_pct": _safe_percent_delta(h3_time_sec, osm_time_sec),
                     "abs_time_error": _safe_abs(_safe_percent_delta(h3_time_sec, osm_time_sec)),
+                    "time_postcalibrated_error_sec": (h3_time_postcalibrated_sec - osm_time_sec) if h3_time_postcalibrated_sec is not None and osm_time_sec is not None else None,
+                    "time_postcalibrated_error_pct": _safe_percent_delta(h3_time_postcalibrated_sec, osm_time_sec),
+                    "abs_time_postcalibrated_error": _safe_abs(_safe_percent_delta(h3_time_postcalibrated_sec, osm_time_sec)),
                     "osm_travel_miles": osm_miles,
                     "h3_travel_miles": h3_miles,
                     "distance_error_miles": (h3_miles - osm_miles) if h3_miles is not None and osm_miles is not None else None,
@@ -645,7 +665,7 @@ if __name__ == "__main__":
     ox.settings.use_cache = True
     ox.settings.log_console = True
 
-    vintage = 6
+    vintage = 7
     output_dir = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
     csv_file = os.path.join(os.path.dirname(__file__), "osm_scale_calibration.csv")
     output_gpkg = os.path.join(output_dir, f"h3_osm_calibration_vintage{vintage}.gpkg")
@@ -658,11 +678,14 @@ if __name__ == "__main__":
         enforce_min_step_time=True,
         v_max_mph=50.0,
         floor_speed_source="vmax",
-        min_osm_speed_mph=10.0 / hnetx.KM_PER_MILE,
+        min_osm_speed_mph=15,
         route_weight_attr="travel_time_route",
-        route_floor_penalty_weight=1.0,
+        route_floor_penalty_weight=0.35,
+        report_weight_attr="travel_time_postcalibrated",
+        report_floor_penalty_weight=1.0,
         shape_corridor_meters=100.0,
         snap_k=10,
+        osm_force_refresh=False,
     )
 
     result = run_h3_osm_calibration(

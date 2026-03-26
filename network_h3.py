@@ -197,6 +197,8 @@ def build_h3_travel_graph_from_osm(
     way_cell_refine_max_depth: int = 18,
     route_weight_attr: str = "travel_time_route",
     route_floor_penalty_weight: float = 0.35,
+    report_weight_attr: str = "travel_time_postcalibrated",
+    report_floor_penalty_weight: float = 1.0,
 ) -> nx.Graph:
     """
     Build an H3-level undirected travel graph by sampling along each OSM edge geometry.
@@ -241,6 +243,14 @@ def build_h3_travel_graph_from_osm(
         route_cost = observed + w * max(0, floored - observed)
       - 0.0 ignores floor in route-choice cost (fastest-path bias)
       - 1.0 equals strict floored behavior
+
+    report_weight_attr:
+      - edge attribute name to store reporting-only postcalibrated travel time.
+
+    report_floor_penalty_weight:
+      - weight in [0, 1] controlling how strongly floor uplift impacts the
+        reporting-only postcalibrated travel time:
+        report_cost = observed + w * max(0, floored - observed)
     """
     sample_meters_value = _resolve_distance_meters(
         miles=sample_miles,
@@ -268,6 +278,8 @@ def build_h3_travel_graph_from_osm(
         raise ValueError("min_osm_speed_kph must be > 0")
     if not (0.0 <= float(route_floor_penalty_weight) <= 1.0):
         raise ValueError("route_floor_penalty_weight must be in [0, 1].")
+    if not (0.0 <= float(report_floor_penalty_weight) <= 1.0):
+        raise ValueError("report_floor_penalty_weight must be in [0, 1].")
 
     # Project graph to a metric CRS so sampling is in meters
     Gp = ox.project_graph(G_osm)
@@ -474,13 +486,16 @@ def build_h3_travel_graph_from_osm(
             floor_applied = bool(floored_w > observed_w + 1e-9)
 
         route_w = observed_w + float(route_floor_penalty_weight) * max(0.0, floored_w - observed_w)
+        report_w = observed_w + float(report_floor_penalty_weight) * max(0.0, floored_w - observed_w)
 
         edge_attrs: Dict[str, Any] = {
             weight_attr: float(floored_w),
             "observed_step_time_raw_sec": observed_w,
             "step_time_floored_sec": float(floored_w),
             "step_time_route_sec": float(route_w),
+            "step_time_postcalibrated_sec": float(report_w),
             "route_floor_penalty_weight": float(route_floor_penalty_weight),
+            "report_floor_penalty_weight": float(report_floor_penalty_weight),
             "centroid_dist_m": float(dist_m),
             "centroid_dist_miles": _meters_to_miles(dist_m),
             "osm_median_speed_kph": osm_speed_median_kph,
@@ -494,6 +509,12 @@ def build_h3_travel_graph_from_osm(
             edge_attrs[weight_attr] = float(route_w)
         else:
             edge_attrs[route_weight_attr] = float(route_w)
+        if report_weight_attr == weight_attr:
+            edge_attrs[weight_attr] = float(report_w)
+        elif report_weight_attr == route_weight_attr:
+            edge_attrs[route_weight_attr] = float(report_w)
+        else:
+            edge_attrs[report_weight_attr] = float(report_w)
 
         H.add_edge(
             a,
@@ -542,6 +563,18 @@ def snap_cell_to_graph(
                 return cand
 
     return None
+
+
+def path_weight_sum(
+    h3_graph: nx.Graph,
+    path_cells: Sequence[str],
+    *,
+    weight_attr: str,
+) -> float:
+    total = 0.0
+    for a, b in zip(path_cells[:-1], path_cells[1:]):
+        total += float(h3_graph[a][b].get(weight_attr, 0.0))
+    return float(total)
 
 
 def h3_path_to_linestring(path_cells: List[str]) -> LineString:
