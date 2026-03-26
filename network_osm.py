@@ -11,6 +11,7 @@ import networkx as nx
 import osmnx as ox
 import pyproj
 from shapely.geometry import LineString, Point, Polygon, box
+from shapely import wkt as shapely_wkt
 
 METERS_PER_MILE: float = 1609.344
 
@@ -37,6 +38,92 @@ def _graph_cache_key(
         ]
     )
     return hashlib.sha1(key_raw.encode("utf-8")).hexdigest()
+
+
+def _to_float_or_keep(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        txt = value.strip()
+        if not txt:
+            return value
+        try:
+            return float(txt)
+        except Exception:
+            return value
+    return value
+
+
+def _normalize_loaded_graph(G: nx.MultiDiGraph) -> nx.MultiDiGraph:
+    # GraphML loads frequently return numeric attrs as strings.
+    for _, data in G.nodes(data=True):
+        if "x" in data:
+            data["x"] = _to_float_or_keep(data.get("x"))
+        if "y" in data:
+            data["y"] = _to_float_or_keep(data.get("y"))
+
+    for _, _, _, data in G.edges(keys=True, data=True):
+        for key in ("length", "speed_kph", "travel_time"):
+            if key in data:
+                data[key] = _to_float_or_keep(data.get(key))
+        geom = data.get("geometry")
+        if isinstance(geom, str):
+            try:
+                parsed = shapely_wkt.loads(geom)
+                if isinstance(parsed, LineString) and not parsed.is_empty:
+                    data["geometry"] = parsed
+            except Exception:
+                pass
+    return G
+
+
+def _coords_look_like_wgs84(G: nx.MultiDiGraph, sample_n: int = 1000) -> bool:
+    checked = 0
+    for _, data in G.nodes(data=True):
+        x_raw = data.get("x")
+        y_raw = data.get("y")
+        if x_raw is None or y_raw is None:
+            continue
+        try:
+            x = float(x_raw)
+            y = float(y_raw)
+        except Exception:
+            return False
+        if x < -180.0 or x > 180.0 or y < -90.0 or y > 90.0:
+            return False
+        checked += 1
+        if checked >= sample_n:
+            break
+    return checked > 0
+
+
+def _graph_overlaps_polygon_bbox(G: nx.MultiDiGraph, polygon_wgs84: Polygon) -> bool:
+    xs: List[float] = []
+    ys: List[float] = []
+    for _, data in G.nodes(data=True):
+        x_raw = data.get("x")
+        y_raw = data.get("y")
+        if x_raw is None or y_raw is None:
+            continue
+        try:
+            xs.append(float(x_raw))
+            ys.append(float(y_raw))
+        except Exception:
+            continue
+    if not xs or not ys:
+        return False
+
+    g_minx, g_maxx = min(xs), max(xs)
+    g_miny, g_maxy = min(ys), max(ys)
+    p_minx, p_miny, p_maxx, p_maxy = polygon_wgs84.bounds
+
+    overlaps_x = max(g_minx, p_minx) <= min(g_maxx, p_maxx)
+    overlaps_y = max(g_miny, p_miny) <= min(g_maxy, p_maxy)
+    return bool(overlaps_x and overlaps_y)
 
 
 @dataclass(frozen=True)
@@ -115,9 +202,40 @@ def download_osm_drive_graph_for_polygon(
         base_cache.mkdir(parents=True, exist_ok=True)
         cache_path = base_cache / f"osm_drive_{graph_key}.graphml"
 
+    loaded_from_cache = False
     if cache_path is not None and cache_path.exists() and not force_refresh:
-        G = ox.load_graphml(filepath=str(cache_path))
+        try:
+            G = ox.load_graphml(
+                filepath=str(cache_path),
+                node_dtypes={"x": float, "y": float},
+                edge_dtypes={
+                    "length": float,
+                    "speed_kph": float,
+                    "travel_time": float,
+                    "geometry": shapely_wkt.loads,
+                },
+            )
+        except TypeError:
+            G = ox.load_graphml(filepath=str(cache_path))
+        G = _normalize_loaded_graph(G)
+        loaded_from_cache = True
     else:
+        G = ox.graph_from_polygon(polygon_wgs84, network_type=network_type, simplify=simplify)
+        G = ox.add_edge_speeds(G)
+        G = ox.add_edge_travel_times(G)
+        if cache_path is not None:
+            ox.save_graphml(G, filepath=str(cache_path))
+
+    # Guardrail: if cache declares WGS84 but coordinates are not WGS84-like,
+    # rebuild to avoid downstream CRS/projection corruption.
+    crs_raw = str(G.graph.get("crs") or "")
+    cache_invalid = False
+    if loaded_from_cache and "4326" in crs_raw and not _coords_look_like_wgs84(G):
+        cache_invalid = True
+    if loaded_from_cache and not _graph_overlaps_polygon_bbox(G, polygon_wgs84):
+        cache_invalid = True
+
+    if cache_invalid:
         G = ox.graph_from_polygon(polygon_wgs84, network_type=network_type, simplify=simplify)
         G = ox.add_edge_speeds(G)
         G = ox.add_edge_travel_times(G)
