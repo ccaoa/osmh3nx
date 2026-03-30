@@ -15,9 +15,11 @@ from shapely.geometry import LineString, Point, Polygon
 from shapely.ops import unary_union
 
 try:
+    from . import h3_hierarchy as hhier
     from . import network_h3 as hnetx
     from . import network_osm as onetx
 except ImportError:
+    import h3_hierarchy as hhier
     import network_h3 as hnetx
     import network_osm as onetx
 
@@ -300,6 +302,47 @@ def _to_gdf(rows: List[Dict[str, Any]], *, geometry_col: str = "geometry") -> gp
     if not rows:
         return gpd.GeoDataFrame(columns=[geometry_col], geometry=geometry_col, crs="EPSG:4326")
     return gpd.GeoDataFrame(rows, geometry=geometry_col, crs="EPSG:4326")
+
+
+def _aggregate_route_hexes_to_parent_layer(
+    h3_hexes_gdf: gpd.GeoDataFrame,
+    *,
+    source_res: int,
+    target_res: int,
+) -> gpd.GeoDataFrame:
+    if h3_hexes_gdf.empty:
+        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
+
+    source = h3_hexes_gdf.loc[h3_hexes_gdf["h3_res"] == int(source_res)].copy()
+    if source.empty:
+        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
+
+    out_frames: List[gpd.GeoDataFrame] = []
+    group_cols = ["pair_id", "count", "city", "state", "category", "origin", "destination", "h3_res"]
+    for _, grp in source.groupby(group_cols, dropna=False):
+        parent_gdf = hhier.aggregate_h3_gdf_to_parent_gdf(grp, target_res, h3_cell_col="h3_cell")
+        if parent_gdf.empty:
+            continue
+        meta = grp.iloc[0]
+        parent_gdf["pair_id"] = int(meta["pair_id"])
+        parent_gdf["count"] = int(meta["count"])
+        parent_gdf["city"] = meta["city"]
+        parent_gdf["state"] = meta["state"]
+        parent_gdf["category"] = meta["category"]
+        parent_gdf["origin"] = meta["origin"]
+        parent_gdf["destination"] = meta["destination"]
+        parent_gdf["source_h3_res"] = int(source_res)
+        parent_gdf["h3_res"] = int(target_res)
+        out_frames.append(parent_gdf)
+
+    if not out_frames:
+        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
+
+    return gpd.GeoDataFrame(
+        pd.concat(out_frames, ignore_index=True),
+        geometry="geometry",
+        crs="EPSG:4326",
+    )
 
 
 def write_layers_to_gpkg(
@@ -609,6 +652,16 @@ def run_h3_osm_calibration(
     osm_routes_gdf = _to_gdf(osm_route_rows)
     h3_routes_gdf = _to_gdf(h3_route_rows)
     h3_hexes_gdf = _to_gdf(h3_hex_rows)
+    h3_hexes_res9_from_res10_gdf = _aggregate_route_hexes_to_parent_layer(
+        h3_hexes_gdf,
+        source_res=10,
+        target_res=9,
+    )
+    h3_hexes_res8_from_res10_gdf = _aggregate_route_hexes_to_parent_layer(
+        h3_hexes_gdf,
+        source_res=10,
+        target_res=8,
+    )
     squares_gdf = _to_gdf(square_rows)
     buffers_gdf = _to_gdf(buffered_rows)
 
@@ -637,6 +690,8 @@ def run_h3_osm_calibration(
             ("osm_routes_truth", osm_routes_gdf),
             ("h3_routes", h3_routes_gdf),
             ("h3_route_hexes", h3_hexes_gdf),
+            ("h3_route_hexes_res9_from_res10", h3_hexes_res9_from_res10_gdf),
+            ("h3_route_hexes_res8_from_res10", h3_hexes_res8_from_res10_gdf),
             ("pair_square_bbox", squares_gdf),
             ("pair_buffer_bbox", buffers_gdf),
             ("osm_context_nodes", context_nodes_gdf),
@@ -656,6 +711,8 @@ def run_h3_osm_calibration(
         "osm_routes_gdf": osm_routes_gdf,
         "h3_routes_gdf": h3_routes_gdf,
         "h3_hexes_gdf": h3_hexes_gdf,
+        "h3_hexes_res9_from_res10_gdf": h3_hexes_res9_from_res10_gdf,
+        "h3_hexes_res8_from_res10_gdf": h3_hexes_res8_from_res10_gdf,
         "context_nodes_gdf": context_nodes_gdf,
         "context_edges_gdf": context_edges_gdf,
     }
@@ -665,7 +722,7 @@ if __name__ == "__main__":
     ox.settings.use_cache = True
     ox.settings.log_console = True
 
-    vintage = 7
+    vintage = 8
     output_dir = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
     csv_file = os.path.join(os.path.dirname(__file__), "osm_scale_calibration.csv")
     output_gpkg = os.path.join(output_dir, f"h3_osm_calibration_vintage{vintage}.gpkg")
