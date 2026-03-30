@@ -30,6 +30,7 @@ class CalibrationConfig:
     bbox_buffer_miles: float = 15.0
     sample_miles: float = 0.1
     combine_parallel: str = "min"
+    directional: bool = True
     enforce_min_step_time: bool = True
     v_max_mph: float = 50.0
     floor_speed_source: str = "vmax"
@@ -448,6 +449,7 @@ def run_h3_osm_calibration(
             destination_cell: Optional[str] = None
             origin_cell_snap: Optional[str] = None
             destination_cell_snap: Optional[str] = None
+            h3_graph_directional: Optional[bool] = None
 
             if G_osm is None:
                 h3_status = "osm_graph_missing"
@@ -463,6 +465,7 @@ def run_h3_osm_calibration(
                         weight_attr=config.osm_weight_attr,
                         sample_miles=config.sample_miles,
                         combine_parallel=config.combine_parallel,
+                        directional=config.directional,
                         enforce_min_step_time=config.enforce_min_step_time,
                         v_max_mph=config.v_max_mph,
                         floor_speed_source=config.floor_speed_source,
@@ -474,6 +477,7 @@ def run_h3_osm_calibration(
                     )
                     h3_graph_nodes = H_h3.number_of_nodes()
                     h3_graph_edges = H_h3.number_of_edges()
+                    h3_graph_directional = bool(H_h3.graph.get("directional", H_h3.is_directed()))
 
                     h3_result = solve_h3_route_for_od(
                         h3_graph=H_h3,
@@ -520,6 +524,7 @@ def run_h3_osm_calibration(
                                 "origin": row["origin"],
                                 "destination": row["destination"],
                                 "h3_res": int(h3_res),
+                                "h3_directional": h3_graph_directional,
                                 "h3_n_cells": h3_cells_count,
                                 "h3_origin_cell": origin_cell,
                                 "h3_destination_cell": destination_cell,
@@ -543,6 +548,7 @@ def run_h3_osm_calibration(
                                     "origin": row["origin"],
                                     "destination": row["destination"],
                                     "h3_res": int(h3_res),
+                                    "h3_directional": h3_graph_directional,
                                     "step": int(step),
                                     "h3_cell": cell,
                                     "geometry": _h3_cell_to_polygon(cell),
@@ -596,6 +602,7 @@ def run_h3_osm_calibration(
                     "osm_graph_edges": osm_graph_edges,
                     "h3_graph_nodes": h3_graph_nodes,
                     "h3_graph_edges": h3_graph_edges,
+                    "h3_directional": h3_graph_directional,
                     "h3_n_cells": h3_cells_count,
                     "h3_origin_cell": origin_cell,
                     "h3_destination_cell": destination_cell,
@@ -675,6 +682,7 @@ if __name__ == "__main__":
         bbox_buffer_miles=5.0,
         sample_miles=0.1,
         combine_parallel="min",
+        directional=True,
         enforce_min_step_time=True,
         v_max_mph=50.0,
         floor_speed_source="vmax",

@@ -193,6 +193,7 @@ def build_h3_travel_graph_from_osm(
     floor_speed_source: str = "vmax",
     min_osm_speed_mph: Optional[float] = None,
     min_osm_speed_kph: Optional[float] = None,
+    directional: bool = True,
     preserve_way_geometry: bool = True,
     way_cell_refine_max_depth: int = 18,
     route_weight_attr: str = "travel_time_route",
@@ -201,7 +202,7 @@ def build_h3_travel_graph_from_osm(
     report_floor_penalty_weight: float = 1.0,
 ) -> nx.Graph:
     """
-    Build an H3-level undirected travel graph by sampling along each OSM edge geometry.
+    Build an H3-level travel graph by sampling along each OSM edge geometry.
 
     Key differences vs endpoint-only:
       - Samples points along each edge every sample_miles (or sample_meters) in a projected CRS
@@ -224,6 +225,11 @@ def build_h3_travel_graph_from_osm(
       - "osm_median": speed_mps is derived from the median OSM speed_kph observed for that
         adjacency, clamped to [min_osm_speed_mph, v_max_mph] (or the kph equivalents)
         (keeps OSM connectivity and introduces a local speed signal)
+
+    directional:
+      - True: keep ordered H3 transitions from the directed OSM graph and build a directed
+        H3 graph, so reverse movement is only allowed when supported by other OSM edges.
+      - False: collapse directional evidence into undirected H3 adjacencies.
 
     preserve_way_geometry:
       - True: derive crossed H3 cells from the edge geometry itself using recursive midpoint
@@ -289,8 +295,10 @@ def build_h3_travel_graph_from_osm(
 
     to_wgs84 = pyproj.Transformer.from_crs(crs_proj, "EPSG:4326", always_xy=True)
 
-    # We will build edges in an undirected graph with travel_time weights in seconds
-    H = nx.Graph()
+    # Preserve directionality when requested by aggregating ordered H3 transitions from the
+    # directed OSM graph. This prevents one-way ramps and streets from contributing reverse
+    # H3 movement unless another OSM edge supports that reverse direction.
+    H: nx.Graph = nx.DiGraph() if directional else nx.Graph()
 
     def _edge_linestring(u: Any, v: Any, data: Dict[str, Any]) -> LineString:
         geom = data.get("geometry")
@@ -405,8 +413,9 @@ def build_h3_travel_graph_from_osm(
         _, _, dist_m = geod.inv(lng_a, lat_a, lng_b, lat_b)
         return float(dist_m)
 
-    # Temporary store for parallel edge combining
-    # key: (a, b) sorted -> list of candidate weights (seconds)
+    # Temporary store for parallel edge combining. In directional mode, key=(a, b) preserves
+    # the ordered H3 step direction from the directed OSM edge. In undirected mode, the key is
+    # sorted so both directions collapse to one adjacency as before.
     pair_to_weights: Dict[Tuple[str, str], List[float]] = {}
     pair_to_speeds_kph: Dict[Tuple[str, str], List[float]] = {}
 
@@ -446,8 +455,7 @@ def build_h3_travel_graph_from_osm(
         for a, b in zip(cells[:-1], cells[1:]):
             if a == b:
                 continue
-            x, y = (a, b) if a < b else (b, a)
-            key = (x, y)
+            key = (a, b) if directional else ((a, b) if a < b else (b, a))
             pair_to_weights.setdefault(key, []).append(sampled_step_time)
             if edge_speed_kph is not None:
                 pair_to_speeds_kph.setdefault(key, []).append(edge_speed_kph)
@@ -521,6 +529,12 @@ def build_h3_travel_graph_from_osm(
             b,
             **edge_attrs,
         )
+
+    H.graph["directional"] = bool(directional)
+    H.graph["h3_res"] = int(h3_res)
+    H.graph["osm_weight_attr"] = str(weight_attr)
+    H.graph["route_weight_attr"] = str(route_weight_attr)
+    H.graph["report_weight_attr"] = str(report_weight_attr)
 
     return H
 
@@ -746,10 +760,13 @@ def assign_nearest_target_by_h3_network(
     print("Missing target source nodes (should be 0):", len(missing_sources))
 
     # Multi-source Dijkstra
-    # distances[cell] = best travel time to nearest target cell
-    # paths[cell] = path of cells from cell to the nearest target cell (includes both ends)
-    distances, paths = nx.multi_source_dijkstra(
-        h3_graph,
+    # distances[cell] = best travel time from cell to the nearest target cell
+    # paths[cell] = path of cells from the nearest target cell to the cell on the search graph.
+    # For directed graphs we run on the reversed graph so these distances are still
+    # source-to-target costs in the original graph.
+    search_graph: nx.Graph = h3_graph.reverse(copy=False) if h3_graph.is_directed() else h3_graph
+    distances, raw_paths = nx.multi_source_dijkstra(
+        search_graph,
         sources=list(cell_to_target_idx.keys()),
         weight=weight_attr,
     )
@@ -782,20 +799,23 @@ def assign_nearest_target_by_h3_network(
                 "cell", s_cell,
                 "snapped", s_cell_graph,
                 "snapped_in_graph", (s_cell_graph in h3_graph) if s_cell_graph else None,
-                "snapped_in_paths", (s_cell_graph in paths) if s_cell_graph else None,
+                "snapped_in_paths", (s_cell_graph in raw_paths) if s_cell_graph else None,
             )
 
-        if s_cell_graph is None or s_cell_graph not in paths:
+        if s_cell_graph is None or s_cell_graph not in raw_paths:
             chosen_ids.append(None)
             continue
 
+        raw_path_cells: list[str] = list(raw_paths[s_cell_graph])
+        # Normalize to source -> target orientation for both directed and undirected graphs.
+        path_cells: list[str] = list(reversed(raw_path_cells))
+
         # Test prints
         if i < 10:
-            print("path length cells:", len(paths[s_cell_graph]))
+            print("path length cells:", len(path_cells))
             print("travel_time (seconds):", float(distances[s_cell_graph]))
 
         # Also get the path that was taken to get to the destination
-        path_cells: list[str] = paths[s_cell_graph]
         travel_time = float(distances[s_cell_graph])
         travel_miles = _path_distance_miles(h3_graph, path_cells)
         if debug_route_breakdown_source_idx is not None and i == debug_route_breakdown_source_idx:
@@ -813,8 +833,8 @@ def assign_nearest_target_by_h3_network(
         if out_distance_col is not None:
             src.loc[src.index[i], out_distance_col] = travel_miles
 
-        # Nearest target cell is the first element in the returned path
-        nearest_cell = paths[s_cell_graph][0]
+        # After orientation normalization, the destination target cell is the final cell.
+        nearest_cell = path_cells[-1]
         candidate_idxs = cell_to_target_idx.get(nearest_cell, [])
         if not candidate_idxs:
             chosen_ids.append(None)
@@ -895,7 +915,7 @@ What you will probably want to improve next (but this is enough to start testing
 
 Edge sampling along geometry: Instead of mapping only OSM edge endpoints to cells, sample points along each edge geometry and connect the sequence of cells it crosses. That reduces “cell-skipping” artifacts at coarser resolutions.
 
-Directed travel times: right now we collapse to an undirected H3 graph. If you want one-way and turn restrictions to matter, you can keep a directed H3 graph and run directed multi-source Dijkstra.
+Directed travel times: the builder now supports directional H3 collapse. One-way and ramp behavior can be preserved by keeping ordered H3 transitions from the directed OSM graph.
 
 Resolution selection: for county-scale work, h3_res=8 is a decent first test; 9 is finer. You can parameterize this and compare runtime vs error.
 
