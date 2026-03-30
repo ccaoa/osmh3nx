@@ -333,6 +333,8 @@ def _aggregate_route_hexes_to_parent_layer(
         parent_gdf["destination"] = meta["destination"]
         parent_gdf["source_h3_res"] = int(source_res)
         parent_gdf["h3_res"] = int(target_res)
+        parent_gdf["upsampled_source_h3_res"] = int(source_res)
+        parent_gdf["upsampled_target_h3_res"] = int(target_res)
         out_frames.append(parent_gdf)
 
     if not out_frames:
@@ -340,6 +342,33 @@ def _aggregate_route_hexes_to_parent_layer(
 
     return gpd.GeoDataFrame(
         pd.concat(out_frames, ignore_index=True),
+        geometry="geometry",
+        crs="EPSG:4326",
+    )
+
+
+def _aggregate_route_hexes_to_parent_layers(
+    h3_hexes_gdf: gpd.GeoDataFrame,
+    *,
+    source_res: int,
+    target_resolutions: Sequence[int],
+) -> gpd.GeoDataFrame:
+    frames: List[gpd.GeoDataFrame] = []
+    for target_res in target_resolutions:
+        parent_gdf = _aggregate_route_hexes_to_parent_layer(
+            h3_hexes_gdf,
+            source_res=source_res,
+            target_res=int(target_res),
+        )
+        if parent_gdf.empty:
+            continue
+        frames.append(parent_gdf)
+
+    if not frames:
+        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
+
+    return gpd.GeoDataFrame(
+        pd.concat(frames, ignore_index=True),
         geometry="geometry",
         crs="EPSG:4326",
     )
@@ -652,15 +681,10 @@ def run_h3_osm_calibration(
     osm_routes_gdf = _to_gdf(osm_route_rows)
     h3_routes_gdf = _to_gdf(h3_route_rows)
     h3_hexes_gdf = _to_gdf(h3_hex_rows)
-    h3_hexes_res9_from_res10_gdf = _aggregate_route_hexes_to_parent_layer(
+    h3_hexes_upsampled_gdf = _aggregate_route_hexes_to_parent_layers(
         h3_hexes_gdf,
         source_res=10,
-        target_res=9,
-    )
-    h3_hexes_res8_from_res10_gdf = _aggregate_route_hexes_to_parent_layer(
-        h3_hexes_gdf,
-        source_res=10,
-        target_res=8,
+        target_resolutions=(9, 8),
     )
     squares_gdf = _to_gdf(square_rows)
     buffers_gdf = _to_gdf(buffered_rows)
@@ -690,8 +714,7 @@ def run_h3_osm_calibration(
             ("osm_routes_truth", osm_routes_gdf),
             ("h3_routes", h3_routes_gdf),
             ("h3_route_hexes", h3_hexes_gdf),
-            ("h3_route_hexes_res9_from_res10", h3_hexes_res9_from_res10_gdf),
-            ("h3_route_hexes_res8_from_res10", h3_hexes_res8_from_res10_gdf),
+            ("h3_route_hexes_upsampled", h3_hexes_upsampled_gdf),
             ("pair_square_bbox", squares_gdf),
             ("pair_buffer_bbox", buffers_gdf),
             ("osm_context_nodes", context_nodes_gdf),
@@ -711,8 +734,7 @@ def run_h3_osm_calibration(
         "osm_routes_gdf": osm_routes_gdf,
         "h3_routes_gdf": h3_routes_gdf,
         "h3_hexes_gdf": h3_hexes_gdf,
-        "h3_hexes_res9_from_res10_gdf": h3_hexes_res9_from_res10_gdf,
-        "h3_hexes_res8_from_res10_gdf": h3_hexes_res8_from_res10_gdf,
+        "h3_hexes_upsampled_gdf": h3_hexes_upsampled_gdf,
         "context_nodes_gdf": context_nodes_gdf,
         "context_edges_gdf": context_edges_gdf,
     }
