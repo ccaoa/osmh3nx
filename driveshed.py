@@ -7,16 +7,33 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import geopandas as gpd
 import networkx as nx
+import pandas as pd
 from shapely.geometry import LineString, Point, Polygon
 
 import h3
 
+import h3_hierarchy as hhier
 import network_h3
 import network_osm
 
 
 SECONDS_PER_MINUTE: float = 60.0
 DEFAULT_H3_WEIGHT_ATTR: str = "observed_step_time_raw_sec"
+UPSAMPLE_META_COLUMNS: Tuple[str, ...] = (
+    "pair_id",
+    "count",
+    "requested_city",
+    "city",
+    "resolved_city",
+    "state",
+    "category",
+    "origin_wkt",
+    "destination_wkt",
+    "max_travel_minutes",
+    "weight_attr",
+    "origin_h3_cell",
+    "origin_h3_cell_graph",
+)
 
 
 @dataclass
@@ -248,6 +265,116 @@ def _dissolve_reachable_cells(reachable_cells_gdf: gpd.GeoDataFrame) -> gpd.GeoD
         geometry="geometry",
         crs="EPSG:4326",
     )
+
+
+def aggregate_driveshed_cells_to_parent_layer(
+    reachable_cells_gdf: gpd.GeoDataFrame,
+    *,
+    target_res: int,
+    h3_cell_col: str = "h3_cell",
+) -> gpd.GeoDataFrame:
+    """
+    Roll reachable driveshed H3 cells up to one coarser parent resolution.
+    """
+    if reachable_cells_gdf.empty:
+        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
+    if h3_cell_col not in reachable_cells_gdf.columns:
+        raise ValueError(f"Column '{h3_cell_col}' not found in reachable_cells_gdf.")
+
+    group_cols = [col for col in UPSAMPLE_META_COLUMNS if col in reachable_cells_gdf.columns]
+    if "h3_res" in reachable_cells_gdf.columns:
+        group_cols.append("h3_res")
+
+    out_frames: List[gpd.GeoDataFrame] = []
+    grouped = (
+        reachable_cells_gdf.groupby(group_cols, dropna=False)
+        if group_cols
+        else [((), reachable_cells_gdf)]
+    )
+
+    for _, grp in grouped:
+        parent_gdf = hhier.aggregate_h3_gdf_to_parent_gdf(grp, target_res, h3_cell_col=h3_cell_col)
+        if parent_gdf.empty:
+            continue
+
+        meta = grp.iloc[0]
+        source_res = int(meta["h3_res"]) if "h3_res" in grp.columns else int(h3.get_resolution(str(meta[h3_cell_col])))
+        for col in UPSAMPLE_META_COLUMNS:
+            if col in grp.columns:
+                parent_gdf[col] = meta[col]
+
+        parent_gdf["source_h3_res"] = int(source_res)
+        parent_gdf["h3_res"] = int(target_res)
+        parent_gdf["upsampled_source_h3_res"] = int(source_res)
+        parent_gdf["upsampled_target_h3_res"] = int(target_res)
+        out_frames.append(parent_gdf)
+
+    if not out_frames:
+        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
+
+    return gpd.GeoDataFrame(pd.concat(out_frames, ignore_index=True), geometry="geometry", crs="EPSG:4326")
+
+
+def aggregate_driveshed_cells_to_parent_layers(
+    reachable_cells_gdf: gpd.GeoDataFrame,
+    *,
+    target_resolutions: Sequence[int],
+    h3_cell_col: str = "h3_cell",
+) -> gpd.GeoDataFrame:
+    frames: List[gpd.GeoDataFrame] = []
+    for target_res in target_resolutions:
+        parent_gdf = aggregate_driveshed_cells_to_parent_layer(
+            reachable_cells_gdf,
+            target_res=int(target_res),
+            h3_cell_col=h3_cell_col,
+        )
+        if parent_gdf.empty:
+            continue
+        frames.append(parent_gdf)
+
+    if not frames:
+        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
+
+    return gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), geometry="geometry", crs="EPSG:4326")
+
+
+def dissolve_upsampled_driveshed_cells(
+    upsampled_cells_gdf: gpd.GeoDataFrame,
+) -> gpd.GeoDataFrame:
+    """
+    Dissolve upsampled parent cells into one driveshed polygon per origin and target resolution.
+    """
+    if upsampled_cells_gdf.empty:
+        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
+
+    group_cols = [col for col in UPSAMPLE_META_COLUMNS if col in upsampled_cells_gdf.columns]
+    for col in ("source_h3_res", "h3_res", "upsampled_source_h3_res", "upsampled_target_h3_res"):
+        if col in upsampled_cells_gdf.columns:
+            group_cols.append(col)
+
+    out_rows: List[Dict[str, Any]] = []
+    grouped = (
+        upsampled_cells_gdf.groupby(group_cols, dropna=False)
+        if group_cols
+        else [((), upsampled_cells_gdf)]
+    )
+
+    for _, grp in grouped:
+        try:
+            geom = grp.geometry.union_all()
+        except AttributeError:
+            geom = grp.unary_union
+
+        row: Dict[str, Any] = {}
+        meta = grp.iloc[0]
+        for col in group_cols:
+            row[col] = meta[col]
+        row["n_cells"] = int(len(grp))
+        row["n_child_cells"] = int(grp["n_child_cells"].fillna(0).astype(int).sum()) if "n_child_cells" in grp.columns else int(len(grp))
+        row["geometry"] = geom
+        out_rows.append(row)
+
+    return gpd.GeoDataFrame(out_rows, geometry="geometry", crs="EPSG:4326")
 
 
 def build_h3_driveshed_from_point(

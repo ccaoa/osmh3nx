@@ -16,6 +16,7 @@ import h3_osm_calibration as hcal
 class DriveshedTestConfig:
     requested_cities: Sequence[str] = ("Christiansburg", "Knoxville", "NYC", "Huntsville", "Pasadena")
     h3_res: int = 10
+    upsampled_target_resolutions: Sequence[int] = (9, 8)
     max_travel_minutes: float = 15.0
     weight_attr: str = dshed.DEFAULT_H3_WEIGHT_ATTR
     search_buffer_speed_mph: float = 60.0
@@ -187,6 +188,17 @@ def run_driveshed_test(
                 gpd.GeoDataFrame(pd.concat(search_rows, ignore_index=True), geometry="geometry", crs="EPSG:4326"),
             )
         )
+
+    driveshed_cells_gdf = next(gdf for layer_name, gdf in layers if layer_name == "driveshed_cells")
+    upsampled_cells_gdf = dshed.aggregate_driveshed_cells_to_parent_layers(
+        driveshed_cells_gdf,
+        target_resolutions=config.upsampled_target_resolutions,
+        h3_cell_col="h3_cell",
+    )
+    if not upsampled_cells_gdf.empty:
+        upsampled_polygons_gdf = dshed.dissolve_upsampled_driveshed_cells(upsampled_cells_gdf)
+        layers.append(("driveshed_cells_upsampled", upsampled_cells_gdf))
+        layers.append(("driveshed_polygons_upsampled", upsampled_polygons_gdf))
 
     written_layers = hcal.write_layers_to_gpkg(output_gpkg_path, layers=layers)
     return {
