@@ -14,6 +14,7 @@ from shapely.ops import unary_union
 from ccaoa import core as cf, raccoon as rc, gis
 
 import calibrate as calx
+import h3_osm_calibration as hcal
 import network_h3 as hnetx
 
 @dataclass(frozen=True)
@@ -118,13 +119,13 @@ if __name__ == "__main__":
     # Synthetic example points
     src_points = gpd.GeoDataFrame(
         {"src_id": ["a", "b"]},
-        geometry=[Point(-80.57, 37.13), Point(-80.40, 37.24)],
+        geometry=[Point(-80.54795104042991, 37.1298928283625), Point(-80.40, 37.24)],
         crs="EPSG:4326",
     )
 
     tgt_points = gpd.GeoDataFrame(
         {"tgt_id": [101, 102, 103]},
-        geometry=[Point(-80.58, 37.13), Point(-80.43, 37.21), Point(-80.32, 37.28)],
+        geometry=[Point(-80.57697081226758, 37.13176833876923), Point(-80.43, 37.21), Point(-80.32, 37.28)],
         crs="EPSG:4326",
     )
 
@@ -147,6 +148,18 @@ if __name__ == "__main__":
         line = hnetx.h3_path_to_linestring(cells)
         print(line)
 
+    report_weight_attr = str(
+        H_h3.graph.get(
+            "report_weight_attr",
+            calx.get_default_report_weight_attr(calx.get_calibration_profile()),
+        )
+    )
+    out["h3_travel_time_postcalibrated"] = out[pathcol].apply(
+        lambda p: hnetx.path_weight_sum(H_h3, p.split("|"), weight_attr=report_weight_attr)
+        if isinstance(p, str) and p.strip()
+        else np.nan
+    )
+
     # Output the routes to GDF
     routes = hnetx.build_route_gdf_from_assignment(
         out,
@@ -163,22 +176,23 @@ if __name__ == "__main__":
     export = True
     if export:
         # XPRT
-        runtry = 8
-
-        gis.gdf_to_file(routes,
-            os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),
-                         f"h3_routes_{str(runtry)}_rez{str(resolution_h3_cell)}.geojson"),
-            file_format=".geojson", overwrite=True
+        runtry = 9
+        output_gpkg = os.path.join(
+            os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),
+            f"moco_radford_test_{str(runtry)}_rez{str(resolution_h3_cell)}.gpkg",
         )
-        gis.gdf_to_file(path_hexes,
-            os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),
-                         f"h3_path_hexes_{str(runtry)}_rez{str(resolution_h3_cell)}.geojson"),
-                        file_format=".geojson", overwrite=True
-                        )
-        gis.gdf_to_file(out,os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),
-                         f"outtestresult_{str(runtry)}_rez{str(resolution_h3_cell)}.geojson"), overwrite=True)
+        written_layers = hcal.write_layers_to_gpkg(
+            output_gpkg,
+            layers=[
+                (f"h3_routes_{str(runtry)}_rez{str(resolution_h3_cell)}", routes),
+                (f"h3_path_hexes_{str(runtry)}_rez{str(resolution_h3_cell)}", path_hexes),
+                (f"outtestresult_{str(runtry)}_rez{str(resolution_h3_cell)}", out),
+            ],
+        )
+        print("Wrote GPKG:", output_gpkg)
+        print("Layers written:", written_layers)
 
-    print(out[["src_id", "nearest_tgt_id", "h3_travel_miles", "h3_travel_time"]])
+    print(out[["src_id", "nearest_tgt_id", "h3_travel_miles", "h3_travel_time", "h3_travel_time_postcalibrated"]])
 
     cf.runtime(start)
     # return out
