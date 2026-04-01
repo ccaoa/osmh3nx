@@ -84,7 +84,7 @@ if __name__ == "__main__":
 
     ox.settings.use_cache = True
     ox.settings.log_console = True
-    resolution_h3_cell: int = 8
+    resolution_h3_cell: int = 10
 
     output_tests: bool = False
     area, G_osm, H_h3, h3_grid = demo_radford_montgomery_pipeline(h3_res=resolution_h3_cell, test_outs=output_tests)  # Returns StudyArea, nx.MultiDiGraph, nx.Graph, gpd.GeoDataFrame
@@ -102,9 +102,19 @@ if __name__ == "__main__":
     if output_tests:
         gis.gdf_to_file(h3_grid,os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),f"mocorad_h3_grid_rez{str(resolution_h3_cell)}.geojson"), overwrite=True)
     print()
-    print("Connected components:", nx.number_connected_components(H_h3))
-    sizes = sorted((len(c) for c in nx.connected_components(H_h3)), reverse=True)
-    print("Largest components:", sizes[:10])
+    if H_h3.is_directed():
+        weak_component_count = nx.number_weakly_connected_components(H_h3)
+        weak_sizes = sorted((len(c) for c in nx.weakly_connected_components(H_h3)), reverse=True)
+        strong_component_count = nx.number_strongly_connected_components(H_h3)
+        strong_sizes = sorted((len(c) for c in nx.strongly_connected_components(H_h3)), reverse=True)
+        print("Weakly connected components:", weak_component_count)
+        print("Largest weak components:", weak_sizes[:10])
+        print("Strongly connected components:", strong_component_count)
+        print("Largest strong components:", strong_sizes[:10])
+    else:
+        print("Connected components:", nx.number_connected_components(H_h3))
+        sizes = sorted((len(c) for c in nx.connected_components(H_h3)), reverse=True)
+        print("Largest components:", sizes[:10])
     # Synthetic example points
     src_points = gpd.GeoDataFrame(
         {"src_id": ["a", "b"]},
@@ -153,7 +163,7 @@ if __name__ == "__main__":
     export = True
     if export:
         # XPRT
-        runtry = 7
+        runtry = 8
 
         gis.gdf_to_file(routes,
             os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),
