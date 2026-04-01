@@ -13,6 +13,7 @@ from shapely.ops import unary_union
 
 from ccaoa import core as cf, raccoon as rc, gis
 
+import calibrate as calx
 import network_h3 as hnetx
 
 @dataclass(frozen=True)
@@ -50,6 +51,7 @@ def get_study_area_radford_montgomery(output_osm_test: bool = False) -> StudyAre
 def demo_radford_montgomery_pipeline(
     *,
     h3_res: int = 8,
+    calibration_profile_name: str = calx.DEFAULT_PROFILE_NAME,
     test_outs: bool = False
 ) -> Tuple[StudyArea, nx.MultiDiGraph, nx.Graph, gpd.GeoDataFrame]:
     """
@@ -57,19 +59,10 @@ def demo_radford_montgomery_pipeline(
     """
     area = get_study_area_radford_montgomery(output_osm_test=test_outs)
     G_osm = hnetx.download_osm_graph_drive(area.polygon_wgs84)
-    # sample_spacing_miles = 30.0 / hnetx.METERS_PER_MILE
-    H_h3 = hnetx.build_h3_travel_graph_from_osm(
+    H_h3, _profile = calx.build_calibrated_h3_graph_from_osm(
         G_osm,
         h3_res=h3_res,
-        weight_attr="travel_time",
-        combine_parallel="min",
-        sample_miles=0.1,
-        enforce_min_step_time=True,
-        v_max_mph=50,
-        floor_speed_source="vmax",
-        min_osm_speed_mph=10.0 / hnetx.KM_PER_MILE,  # keeps old 10 kph lower clamp behavior
-        route_weight_attr="travel_time_route",
-        route_floor_penalty_weight=0.35,
+        profile_name=calibration_profile_name,
     )
     # TODO delete test prints; used for debugging
     print("H_h3 nodes:", H_h3.number_of_nodes())
@@ -95,6 +88,12 @@ if __name__ == "__main__":
 
     output_tests: bool = False
     area, G_osm, H_h3, h3_grid = demo_radford_montgomery_pipeline(h3_res=resolution_h3_cell, test_outs=output_tests)  # Returns StudyArea, nx.MultiDiGraph, nx.Graph, gpd.GeoDataFrame
+    query_weight_attr = str(
+        H_h3.graph.get(
+            "default_query_weight_attr",
+            calx.get_default_query_weight_attr(calx.get_calibration_profile()),
+        )
+    )
 
     print(area)
     print(G_osm)
@@ -127,7 +126,7 @@ if __name__ == "__main__":
         out_col="nearest_tgt_id",
         h3_graph=H_h3,
         h3_res=int(resolution_h3_cell),
-        weight_attr="travel_time_route",
+        weight_attr=query_weight_attr,
         out_path_col=pathcol
     )
 
