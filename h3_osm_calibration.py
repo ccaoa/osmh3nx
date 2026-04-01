@@ -15,10 +15,12 @@ from shapely.geometry import LineString, Point, Polygon
 from shapely.ops import unary_union
 
 try:
+    from . import calibrate as calx
     from . import h3_hierarchy as hhier
     from . import network_h3 as hnetx
     from . import network_osm as onetx
 except ImportError:
+    import calibrate as calx
     import h3_hierarchy as hhier
     import network_h3 as hnetx
     import network_osm as onetx
@@ -28,19 +30,11 @@ except ImportError:
 class CalibrationConfig:
     h3_resolutions: Tuple[int, ...] = (7, 8, 9, 10)
     osm_weight_attr: str = "travel_time"
-    h3_weight_attr: str = "travel_time_route"
+    calibration_profile_name: str = calx.DEFAULT_PROFILE_NAME
+    calibration_profile_overrides: Optional[Dict[str, Any]] = None
+    h3_weight_attr: Optional[str] = None
     bbox_buffer_miles: float = 15.0
-    sample_miles: float = 0.1
-    combine_parallel: str = "min"
-    directional: bool = True
-    enforce_min_step_time: bool = True
-    v_max_mph: float = 50.0
-    floor_speed_source: str = "vmax"
-    min_osm_speed_mph: float = 10.0 / hnetx.KM_PER_MILE
-    route_weight_attr: str = "travel_time_route"
-    route_floor_penalty_weight: float = 0.35
-    report_weight_attr: str = "travel_time_postcalibrated"
-    report_floor_penalty_weight: float = 1.0
+    report_weight_attr: Optional[str] = None
     shape_corridor_meters: float = 100.0
     snap_k: int = 10
     osm_cache_dir: Optional[str] = "cache"
@@ -405,6 +399,12 @@ def run_h3_osm_calibration(
 ) -> Dict[str, Any]:
     od_pairs = load_od_pairs(csv_path)
     od_points = build_od_points_gdf(od_pairs)
+    profile = calx.get_calibration_profile(
+        config.calibration_profile_name,
+        overrides=config.calibration_profile_overrides,
+    )
+    h3_query_weight_attr = config.h3_weight_attr or calx.get_default_query_weight_attr(profile)
+    report_weight_attr = config.report_weight_attr or calx.get_default_report_weight_attr(profile)
 
     metrics_rows: List[Dict[str, Any]] = []
     osm_route_rows: List[Dict[str, Any]] = []
@@ -531,21 +531,11 @@ def run_h3_osm_calibration(
                 )
             else:
                 try:
-                    H_h3 = hnetx.build_h3_travel_graph_from_osm(
+                    H_h3, active_profile = calx.build_calibrated_h3_graph_from_osm(
                         G_osm,
                         h3_res=h3_res,
-                        weight_attr=config.osm_weight_attr,
-                        sample_miles=config.sample_miles,
-                        combine_parallel=config.combine_parallel,
-                        directional=config.directional,
-                        enforce_min_step_time=config.enforce_min_step_time,
-                        v_max_mph=config.v_max_mph,
-                        floor_speed_source=config.floor_speed_source,
-                        min_osm_speed_mph=config.min_osm_speed_mph,
-                        route_weight_attr=config.route_weight_attr,
-                        route_floor_penalty_weight=config.route_floor_penalty_weight,
-                        report_weight_attr=config.report_weight_attr,
-                        report_floor_penalty_weight=config.report_floor_penalty_weight,
+                        profile_name=config.calibration_profile_name,
+                        profile_overrides=config.calibration_profile_overrides,
                     )
                     h3_graph_nodes = H_h3.number_of_nodes()
                     h3_graph_edges = H_h3.number_of_edges()
@@ -556,8 +546,8 @@ def run_h3_osm_calibration(
                         origin_wgs84=origin,
                         destination_wgs84=destination,
                         h3_res=h3_res,
-                        weight_attr=config.h3_weight_attr,
-                        report_weight_attr=config.report_weight_attr,
+                        weight_attr=h3_query_weight_attr,
+                        report_weight_attr=report_weight_attr,
                         snap_k=config.snap_k,
                     )
                     h3_status = str(h3_result["status"])
@@ -597,6 +587,7 @@ def run_h3_osm_calibration(
                                 "destination": row["destination"],
                                 "h3_res": int(h3_res),
                                 "h3_directional": h3_graph_directional,
+                                "h3_calibration_profile": active_profile.name,
                                 "h3_n_cells": h3_cells_count,
                                 "h3_origin_cell": origin_cell,
                                 "h3_destination_cell": destination_cell,
@@ -621,6 +612,7 @@ def run_h3_osm_calibration(
                                     "destination": row["destination"],
                                     "h3_res": int(h3_res),
                                     "h3_directional": h3_graph_directional,
+                                    "h3_calibration_profile": active_profile.name,
                                     "step": int(step),
                                     "h3_cell": cell,
                                     "geometry": _h3_cell_to_polygon(cell),
@@ -675,6 +667,7 @@ def run_h3_osm_calibration(
                     "h3_graph_nodes": h3_graph_nodes,
                     "h3_graph_edges": h3_graph_edges,
                     "h3_directional": h3_graph_directional,
+                    "h3_calibration_profile": profile.name,
                     "h3_n_cells": h3_cells_count,
                     "h3_origin_cell": origin_cell,
                     "h3_destination_cell": destination_cell,
@@ -751,25 +744,15 @@ if __name__ == "__main__":
     ox.settings.use_cache = True
     ox.settings.log_console = True
 
-    vintage = 9
+    vintage = 10
     output_dir = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
     csv_file = os.path.join(os.path.dirname(__file__), "osm_scale_calibration.csv")
     output_gpkg = os.path.join(output_dir, f"h3_osm_calibration_vintage{vintage}.gpkg")
 
     cfg = CalibrationConfig(
         h3_resolutions=(7, 8, 9, 10),
+        calibration_profile_name=calx.DEFAULT_PROFILE_NAME,
         bbox_buffer_miles=5.0,
-        sample_miles=0.1,
-        combine_parallel="min",
-        directional=True,
-        enforce_min_step_time=True,
-        v_max_mph=50.0,
-        floor_speed_source="vmax",
-        min_osm_speed_mph=15,
-        route_weight_attr="travel_time_route",
-        route_floor_penalty_weight=0.35,
-        report_weight_attr="travel_time_postcalibrated",
-        report_floor_penalty_weight=1.0,
         shape_corridor_meters=100.0,
         snap_k=10,
         osm_force_refresh=False,
