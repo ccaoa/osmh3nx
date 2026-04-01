@@ -12,13 +12,17 @@ from shapely.geometry import LineString, Point, Polygon
 
 import h3
 
+import calibrate as calx
 import h3_hierarchy as hhier
 import network_h3
 import network_osm
 
 
 SECONDS_PER_MINUTE: float = 60.0
-DEFAULT_H3_WEIGHT_ATTR: str = "observed_step_time_raw_sec"
+DEFAULT_CALIBRATION_PROFILE_NAME: str = calx.DEFAULT_PROFILE_NAME
+DEFAULT_CALIBRATION_PROFILE = calx.get_calibration_profile(DEFAULT_CALIBRATION_PROFILE_NAME)
+DEFAULT_H3_RES: int = calx.get_default_h3_res(DEFAULT_CALIBRATION_PROFILE)
+DEFAULT_H3_WEIGHT_ATTR: str = calx.get_default_query_weight_attr(DEFAULT_CALIBRATION_PROFILE)
 UPSAMPLE_META_COLUMNS: Tuple[str, ...] = (
     "pair_id",
     "count",
@@ -31,6 +35,7 @@ UPSAMPLE_META_COLUMNS: Tuple[str, ...] = (
     "destination_wkt",
     "max_travel_minutes",
     "weight_attr",
+    "calibration_profile_name",
     "origin_h3_cell",
     "origin_h3_cell_graph",
 )
@@ -45,6 +50,7 @@ class DriveshedResult:
     max_travel_minutes: float
     cutoff_seconds: float
     weight_attr: str
+    calibration_profile_name: str
     search_polygon_wgs84: Optional[Polygon]
     osm_graph: Optional[nx.MultiDiGraph]
     h3_graph: nx.Graph
@@ -381,8 +387,10 @@ def build_h3_driveshed_from_point(
     origin: Any,
     *,
     max_travel_minutes: float = 15.0,
-    h3_res: int = 10,
-    weight_attr: str = DEFAULT_H3_WEIGHT_ATTR,
+    h3_res: Optional[int] = None,
+    weight_attr: Optional[str] = None,
+    calibration_profile_name: str = DEFAULT_CALIBRATION_PROFILE_NAME,
+    calibration_profile_overrides: Optional[Dict[str, Any]] = None,
     h3_graph: Optional[nx.Graph] = None,
     G_osm: Optional[nx.MultiDiGraph] = None,
     search_polygon_wgs84: Optional[Polygon] = None,
@@ -391,22 +399,6 @@ def build_h3_driveshed_from_point(
     search_buffer_speed_mph: float = 60.0,
     search_buffer_factor: float = 1.4,
     search_min_buffer_miles: float = 2.0,
-    sample_miles: Optional[float] = 0.1,
-    sample_meters: Optional[float] = None,
-    combine_parallel: str = "min",
-    enforce_min_step_time: bool = True,
-    v_max_mph: Optional[float] = 50.0,
-    v_max_kph: Optional[float] = None,
-    floor_speed_source: str = "vmax",
-    min_osm_speed_mph: Optional[float] = 10.0,
-    min_osm_speed_kph: Optional[float] = None,
-    directional: bool = True,
-    preserve_way_geometry: bool = True,
-    way_cell_refine_max_depth: int = 18,
-    route_weight_attr: str = "travel_time_route",
-    route_floor_penalty_weight: float = 0.35,
-    report_weight_attr: str = "travel_time_postcalibrated",
-    report_floor_penalty_weight: float = 1.0,
     snap_max_k: int = 10,
 ) -> DriveshedResult:
     """
@@ -418,7 +410,14 @@ def build_h3_driveshed_from_point(
     """
     if max_travel_minutes <= 0:
         raise ValueError("max_travel_minutes must be > 0.")
-    if h3_res < 0:
+    profile = calx.get_calibration_profile(
+        calibration_profile_name,
+        overrides=calibration_profile_overrides,
+    )
+    resolved_h3_res = int(h3_res if h3_res is not None else calx.get_default_h3_res(profile))
+    resolved_weight_attr = str(weight_attr or calx.get_default_query_weight_attr(profile))
+
+    if resolved_h3_res < 0:
         raise ValueError("h3_res must be >= 0.")
     if snap_max_k < 0:
         raise ValueError("snap_max_k must be >= 0.")
@@ -442,38 +441,34 @@ def build_h3_driveshed_from_point(
                 force_refresh=osm_force_refresh,
             )
 
-        h3_graph = network_h3.build_h3_travel_graph_from_osm(
+        h3_graph, active_profile = calx.build_calibrated_h3_graph_from_osm(
             G_osm,
-            h3_res,
-            weight_attr="travel_time",
-            sample_miles=sample_miles,
-            sample_meters=sample_meters,
-            combine_parallel=combine_parallel,
-            enforce_min_step_time=enforce_min_step_time,
-            v_max_mph=v_max_mph,
-            v_max_kph=v_max_kph,
-            floor_speed_source=floor_speed_source,
-            min_osm_speed_mph=min_osm_speed_mph,
-            min_osm_speed_kph=min_osm_speed_kph,
-            directional=directional,
-            preserve_way_geometry=preserve_way_geometry,
-            way_cell_refine_max_depth=way_cell_refine_max_depth,
-            route_weight_attr=route_weight_attr,
-            route_floor_penalty_weight=route_floor_penalty_weight,
-            report_weight_attr=report_weight_attr,
-            report_floor_penalty_weight=report_floor_penalty_weight,
+            h3_res=resolved_h3_res,
+            profile_name=calibration_profile_name,
+            profile_overrides=calibration_profile_overrides,
         )
+        profile = active_profile
     else:
         graph_h3_res = h3_graph.graph.get("h3_res")
-        if graph_h3_res is not None and int(graph_h3_res) != int(h3_res):
+        if graph_h3_res is not None and int(graph_h3_res) != int(resolved_h3_res):
             raise ValueError(
-                f"Provided h3_graph has h3_res={graph_h3_res}, but h3_res={h3_res} was requested."
+                f"Provided h3_graph has h3_res={graph_h3_res}, but h3_res={resolved_h3_res} was requested."
             )
+        if weight_attr is None:
+            resolved_weight_attr = str(
+                h3_graph.graph.get(
+                    "default_query_weight_attr",
+                    calx.get_default_query_weight_attr(profile),
+                )
+            )
+        profile_name_from_graph = h3_graph.graph.get("calibration_profile_name")
+        if profile_name_from_graph:
+            profile = calx.get_calibration_profile(str(profile_name_from_graph))
 
-    _validate_weight_attr(h3_graph, weight_attr)
+    _validate_weight_attr(h3_graph, resolved_weight_attr)
 
     graph_nodes = set(h3_graph.nodes)
-    origin_cell = h3.latlng_to_cell(origin_wgs84.y, origin_wgs84.x, h3_res)
+    origin_cell = h3.latlng_to_cell(origin_wgs84.y, origin_wgs84.x, resolved_h3_res)
     origin_cell_graph = network_h3.snap_cell_to_graph(origin_cell, graph_nodes, max_k=snap_max_k)
     if origin_cell_graph is None:
         raise ValueError("Origin cell could not be snapped to the H3 graph within snap_max_k.")
@@ -482,7 +477,7 @@ def build_h3_driveshed_from_point(
         h3_graph,
         source=origin_cell_graph,
         cutoff=cutoff_seconds,
-        weight=weight_attr,
+        weight=resolved_weight_attr,
     )
     distances = {str(cell): float(time_sec) for cell, time_sec in distances.items()}
     paths = {str(cell): [str(step) for step in path] for cell, path in paths.items()}
@@ -496,7 +491,7 @@ def build_h3_driveshed_from_point(
         h3_graph=h3_graph,
         distances=distances,
         cutoff_seconds=cutoff_seconds,
-        weight_attr=weight_attr,
+        weight_attr=resolved_weight_attr,
     )
     driveshed_gdf = _dissolve_reachable_cells(reachable_cells_gdf)
 
@@ -504,10 +499,11 @@ def build_h3_driveshed_from_point(
         origin_point_wgs84=origin_wgs84,
         origin_h3_cell=origin_cell,
         origin_h3_cell_graph=origin_cell_graph,
-        h3_res=int(h3_res),
+        h3_res=int(resolved_h3_res),
         max_travel_minutes=float(max_travel_minutes),
         cutoff_seconds=float(cutoff_seconds),
-        weight_attr=str(weight_attr),
+        weight_attr=str(resolved_weight_attr),
+        calibration_profile_name=str(profile.name),
         search_polygon_wgs84=search_polygon_wgs84,
         osm_graph=G_osm,
         h3_graph=h3_graph,
@@ -535,6 +531,7 @@ def write_driveshed_result_to_gpkg(
             "h3_res": [result.h3_res],
             "max_travel_minutes": [result.max_travel_minutes],
             "weight_attr": [result.weight_attr],
+            "calibration_profile_name": [result.calibration_profile_name],
         },
         geometry=[result.origin_point_wgs84],
         crs="EPSG:4326",
@@ -559,7 +556,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build an H3 driveshed from a single origin point.")
     parser.add_argument("--lon", type=float, required=True, help="Origin longitude in WGS84.")
     parser.add_argument("--lat", type=float, required=True, help="Origin latitude in WGS84.")
-    parser.add_argument("--h3-res", type=int, default=10, help="H3 resolution. Default: 10.")
+    parser.add_argument("--h3-res", type=int, default=DEFAULT_H3_RES, help=f"H3 resolution. Default: {DEFAULT_H3_RES}.")
+    parser.add_argument(
+        "--calibration-profile",
+        type=str,
+        default=DEFAULT_CALIBRATION_PROFILE_NAME,
+        help=f"Calibration profile name. Default: {DEFAULT_CALIBRATION_PROFILE_NAME}.",
+    )
     parser.add_argument(
         "--max-travel-minutes",
         type=float,
@@ -570,7 +573,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--weight-attr",
         type=str,
         default=DEFAULT_H3_WEIGHT_ATTR,
-        help="H3 edge attribute used for driveshed travel time. Default: observed_step_time_raw_sec.",
+        help=f"H3 edge attribute used for driveshed travel time. Default: {DEFAULT_H3_WEIGHT_ATTR}.",
     )
     parser.add_argument(
         "--output-gpkg",
@@ -590,11 +593,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         origin,
         max_travel_minutes=float(args.max_travel_minutes),
         h3_res=int(args.h3_res),
+        calibration_profile_name=str(args.calibration_profile),
         weight_attr=str(args.weight_attr),
     )
 
     print("Origin H3 cell:", result.origin_h3_cell)
     print("Snapped origin H3 cell:", result.origin_h3_cell_graph)
+    print("Calibration profile:", result.calibration_profile_name)
     print("Reachable H3 cells:", len(result.reachable_cells_gdf))
     print("Reachable H3 edges:", len(result.reachable_edges_gdf))
 

@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Sequence
 import geopandas as gpd
 import pandas as pd
 
+import calibrate as calx
 import driveshed as dshed
 import h3_osm_calibration as hcal
 
@@ -15,24 +16,15 @@ import h3_osm_calibration as hcal
 @dataclass(frozen=True)
 class DriveshedTestConfig:
     requested_cities: Sequence[str] = ("Christiansburg", "Knoxville", "NYC", "Huntsville", "Pasadena")
-    h3_res: int = 10
+    calibration_profile_name: str = calx.DEFAULT_PROFILE_NAME
+    calibration_profile_overrides: Dict[str, Any] | None = None
+    h3_res: int = dshed.DEFAULT_H3_RES
     upsampled_target_resolutions: Sequence[int] = (9, 8)
     max_travel_minutes: float = 15.0
     weight_attr: str = dshed.DEFAULT_H3_WEIGHT_ATTR
     search_buffer_speed_mph: float = 60.0
     search_buffer_factor: float = 1.4
     search_min_buffer_miles: float = 2.0
-    sample_miles: float = 0.1
-    combine_parallel: str = "min"
-    directional: bool = True
-    enforce_min_step_time: bool = True
-    v_max_mph: float = 50.0
-    floor_speed_source: str = "vmax"
-    min_osm_speed_mph: float = 10.0 / dshed.network_h3.KM_PER_MILE
-    route_weight_attr: str = "travel_time_route"
-    route_floor_penalty_weight: float = 0.35
-    report_weight_attr: str = "travel_time_postcalibrated"
-    report_floor_penalty_weight: float = 1.0
     snap_max_k: int = 10
     osm_cache_dir: str | None = "cache"
     osm_force_refresh: bool = False
@@ -87,6 +79,7 @@ def _append_origin_metadata(
     out["h3_res"] = int(result.h3_res)
     out["max_travel_minutes"] = float(result.max_travel_minutes)
     out["weight_attr"] = result.weight_attr
+    out["calibration_profile_name"] = result.calibration_profile_name
     out["origin_h3_cell"] = result.origin_h3_cell
     out["origin_h3_cell_graph"] = result.origin_h3_cell_graph
     return out
@@ -115,22 +108,13 @@ def run_driveshed_test(
             max_travel_minutes=config.max_travel_minutes,
             h3_res=config.h3_res,
             weight_attr=config.weight_attr,
+            calibration_profile_name=config.calibration_profile_name,
+            calibration_profile_overrides=config.calibration_profile_overrides,
             osm_cache_dir=config.osm_cache_dir,
             osm_force_refresh=config.osm_force_refresh,
             search_buffer_speed_mph=config.search_buffer_speed_mph,
             search_buffer_factor=config.search_buffer_factor,
             search_min_buffer_miles=config.search_min_buffer_miles,
-            sample_miles=config.sample_miles,
-            combine_parallel=config.combine_parallel,
-            directional=config.directional,
-            enforce_min_step_time=config.enforce_min_step_time,
-            v_max_mph=config.v_max_mph,
-            floor_speed_source=config.floor_speed_source,
-            min_osm_speed_mph=config.min_osm_speed_mph,
-            route_weight_attr=config.route_weight_attr,
-            route_floor_penalty_weight=config.route_floor_penalty_weight,
-            report_weight_attr=config.report_weight_attr,
-            report_floor_penalty_weight=config.report_floor_penalty_weight,
             snap_max_k=config.snap_max_k,
         )
 
@@ -148,6 +132,7 @@ def run_driveshed_test(
                 "h3_res": [result.h3_res],
                 "max_travel_minutes": [result.max_travel_minutes],
                 "weight_attr": [result.weight_attr],
+                "calibration_profile_name": [result.calibration_profile_name],
             },
             geometry=[result.origin_point_wgs84],
             crs="EPSG:4326",
