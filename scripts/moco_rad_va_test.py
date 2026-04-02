@@ -13,9 +13,16 @@ from shapely.ops import unary_union
 
 from ccaoa import core as cf, raccoon as rc, gis
 
-import calibrate as calx
-import h3_osm_calibration as hcal
-import network_h3 as hnetx
+try:
+    from _bootstrap import ensure_src_on_path
+except ImportError:
+    from scripts._bootstrap import ensure_src_on_path
+
+ensure_src_on_path()
+
+from osmh3nx import calibrate as calx
+from osmh3nx import network_h3 as hnetx
+from osmh3nx.io import write_layers_to_gpkg
 
 @dataclass(frozen=True)
 class StudyArea:
@@ -181,7 +188,7 @@ if __name__ == "__main__":
             os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),
             f"moco_radford_test_{str(runtry)}_rez{str(resolution_h3_cell)}.gpkg",
         )
-        written_layers = hcal.write_layers_to_gpkg(
+        written_layers = write_layers_to_gpkg(
             output_gpkg,
             layers=[
                 (f"h3_routes_{str(runtry)}_rez{str(resolution_h3_cell)}", routes),

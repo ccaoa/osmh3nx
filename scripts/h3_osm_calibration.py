@@ -10,20 +10,22 @@ import h3
 import networkx as nx
 import osmnx as ox
 import pandas as pd
-from shapely import wkt
 from shapely.geometry import LineString, Point, Polygon
 from shapely.ops import unary_union
 
 try:
-    from . import calibrate as calx
-    from . import h3_hierarchy as hhier
-    from . import network_h3 as hnetx
-    from . import network_osm as onetx
+    from _bootstrap import ensure_src_on_path, repo_root
 except ImportError:
-    import calibrate as calx
-    import h3_hierarchy as hhier
-    import network_h3 as hnetx
-    import network_osm as onetx
+    from scripts._bootstrap import ensure_src_on_path, repo_root
+
+ensure_src_on_path()
+
+from osmh3nx import calibrate as calx
+from osmh3nx import h3_hierarchy as hhier
+from osmh3nx import network_h3 as hnetx
+from osmh3nx import network_osm as onetx
+from osmh3nx.data import build_od_points_gdf, load_od_pairs
+from osmh3nx.io import write_layers_to_gpkg
 
 
 @dataclass(frozen=True)
@@ -39,62 +41,6 @@ class CalibrationConfig:
     snap_k: int = 10
     osm_cache_dir: Optional[str] = "cache"
     osm_force_refresh: bool = False  #  True  #
-
-
-def _required_columns() -> List[str]:
-    return ["count", "city", "state", "category", "origin", "destination"]
-
-
-def load_od_pairs(csv_path: str) -> pd.DataFrame:
-    df = pd.read_csv(csv_path)
-    missing = [c for c in _required_columns() if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing required columns in calibration CSV: {missing}")
-
-    out = df.copy()
-    out["pair_id"] = out["count"].astype(int)
-    out["origin_geom"] = out["origin"].apply(wkt.loads)
-    out["destination_geom"] = out["destination"].apply(wkt.loads)
-
-    bad_origin = out["origin_geom"].apply(lambda g: not isinstance(g, Point))
-    bad_dest = out["destination_geom"].apply(lambda g: not isinstance(g, Point))
-    if bool(bad_origin.any()) or bool(bad_dest.any()):
-        raise ValueError("Origin and destination WKT must parse to POINT geometries.")
-
-    out = out.sort_values("pair_id").reset_index(drop=True)
-    return out
-
-
-def build_od_points_gdf(od_pairs: pd.DataFrame) -> gpd.GeoDataFrame:
-    rows: List[Dict[str, Any]] = []
-    for _, r in od_pairs.iterrows():
-        base = {
-            "pair_id": int(r["pair_id"]),
-            "count": int(r["count"]),
-            "city": r["city"],
-            "state": r["state"],
-            "category": r["category"],
-            "origin": r["origin"],
-            "destination": r["destination"],
-        }
-        rows.append(
-            {
-                **base,
-                "point_role": "origin",
-                "point_wkt": r["origin"],
-                "geometry": r["origin_geom"],
-            }
-        )
-        rows.append(
-            {
-                **base,
-                "point_role": "destination",
-                "point_wkt": r["destination"],
-                "geometry": r["destination_geom"],
-            }
-        )
-    return gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
-
 
 def _h3_cell_to_polygon(cell: str) -> Polygon:
     boundary_latlng = h3.cell_to_boundary(cell)
@@ -367,28 +313,6 @@ def _aggregate_route_hexes_to_parent_layers(
         geometry="geometry",
         crs="EPSG:4326",
     )
-
-
-def write_layers_to_gpkg(
-    gpkg_path: str,
-    *,
-    layers: Sequence[Tuple[str, gpd.GeoDataFrame]],
-) -> List[str]:
-    parent = os.path.dirname(gpkg_path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    if os.path.exists(gpkg_path):
-        os.remove(gpkg_path)
-
-    written_layers: List[str] = []
-    mode = "w"
-    for layer_name, gdf in layers:
-        if gdf.empty:
-            continue
-        gdf.to_file(gpkg_path, layer=layer_name, driver="GPKG", mode=mode)
-        written_layers.append(layer_name)
-        mode = "a"
-    return written_layers
 
 
 def run_h3_osm_calibration(
@@ -746,7 +670,7 @@ if __name__ == "__main__":
 
     vintage = 10
     output_dir = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
-    csv_file = os.path.join(os.path.dirname(__file__), "osm_scale_calibration.csv")
+    csv_file = str(repo_root() / "osm_scale_calibration.csv")
     output_gpkg = os.path.join(output_dir, f"h3_osm_calibration_vintage{vintage}.gpkg")
 
     cfg = CalibrationConfig(

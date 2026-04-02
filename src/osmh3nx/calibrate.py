@@ -5,10 +5,7 @@ from typing import Any, Dict, Mapping, Optional
 
 import networkx as nx
 
-try:
-    from . import network_h3 as hnetx
-except ImportError:
-    import network_h3 as hnetx
+from . import network_h3 as hnetx
 
 
 @dataclass(frozen=True)

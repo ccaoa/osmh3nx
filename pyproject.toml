@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "osmh3nx"
+version = "0.1.0"
+description = "H3-over-OSM routing, drivesheds, and network analysis tools."
+requires-python = ">=3.11"
+dependencies = [
+    "geopandas",
+    "h3",
+    "networkx",
+    "numpy",
+    "osmnx",
+    "pandas",
+    "pyproj",
+    "shapely>=2.0",
+]
+
+[project.optional-dependencies]
+development = [
+    "black",
+    "pip-tools",
+]
+
+[project.scripts]
+osmh3nx-driveshed = "osmh3nx.cli.driveshed:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

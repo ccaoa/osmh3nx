@@ -8,9 +8,17 @@ from typing import Any, Dict, List, Sequence
 import geopandas as gpd
 import pandas as pd
 
-import calibrate as calx
-import driveshed as dshed
-import h3_osm_calibration as hcal
+try:
+    from _bootstrap import ensure_src_on_path, repo_root
+except ImportError:
+    from scripts._bootstrap import ensure_src_on_path, repo_root
+
+ensure_src_on_path()
+
+from osmh3nx import calibrate as calx
+from osmh3nx import driveshed as dshed
+from osmh3nx.data import load_od_pairs
+from osmh3nx.io import write_layers_to_gpkg
 
 
 @dataclass(frozen=True)
@@ -94,7 +102,7 @@ def run_driveshed_test(
     output_gpkg_path: str,
     config: DriveshedTestConfig,
 ) -> Dict[str, Any]:
-    od_pairs = hcal.load_od_pairs(csv_path)
+    od_pairs = load_od_pairs(csv_path)
     selected = _resolve_city_rows(od_pairs, config.requested_cities)
 
     origin_rows: List[gpd.GeoDataFrame] = []
@@ -192,7 +200,7 @@ def run_driveshed_test(
         layers.append(("driveshed_cells_upsampled", upsampled_cells_gdf))
         layers.append(("driveshed_polygons_upsampled", upsampled_polygons_gdf))
 
-    written_layers = hcal.write_layers_to_gpkg(output_gpkg_path, layers=layers)
+    written_layers = write_layers_to_gpkg(output_gpkg_path, layers=layers)
     return {
         "selected_pairs": selected,
         "written_layers": written_layers,
@@ -203,7 +211,7 @@ def run_driveshed_test(
 if __name__ == "__main__":
     vintage = 2
     output_dir = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
-    csv_file = os.path.join(os.path.dirname(__file__), "osm_scale_calibration.csv")
+    csv_file = str(repo_root() / "osm_scale_calibration.csv")
     output_gpkg = os.path.join(output_dir, f"h3_driveshed_vintage{vintage}.gpkg")
 
     cfg = DriveshedTestConfig()

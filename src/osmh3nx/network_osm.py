@@ -21,7 +21,7 @@ def miles_to_meters(miles: float) -> float:
 
 
 def _default_cache_dir() -> Path:
-    return Path(__file__).resolve().parent / "cache"
+    return Path.cwd() / "cache"
 
 
 def _graph_cache_key(
@@ -198,7 +198,7 @@ def download_osm_drive_graph_for_polygon(
     if cache_dir is not None:
         base_cache = Path(cache_dir) if cache_dir else _default_cache_dir()
         if not base_cache.is_absolute():
-            base_cache = Path(__file__).resolve().parent / base_cache
+            base_cache = Path.cwd() / base_cache
         base_cache.mkdir(parents=True, exist_ok=True)
         cache_path = base_cache / f"osm_drive_{graph_key}.graphml"
 

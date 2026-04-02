@@ -12,9 +12,9 @@ from shapely.geometry import LineString, Point, Polygon
 
 import h3
 
-import calibrate as calx
-import network_h3
-import network_osm
+from . import calibrate as calx
+from . import network_h3
+from . import network_osm
 
 
 SECONDS_PER_MINUTE: float = 60.0
