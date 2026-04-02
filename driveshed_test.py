@@ -15,7 +15,7 @@ import h3_osm_calibration as hcal
 
 @dataclass(frozen=True)
 class DriveshedTestConfig:
-    requested_cities: Sequence[str] = ("Christiansburg", "Knoxville", "NYC", "Huntsville", "Pasadena")
+    requested_cities: Sequence[str] = ("Christiansburg", "Knoxville", "NYC", "Huntsville", "Baltimore", "Leavenworth WA", "Fargo", "Park Rapids")
     calibration_profile_name: str = calx.DEFAULT_PROFILE_NAME
     calibration_profile_overrides: Dict[str, Any] | None = None
     h3_res: int = dshed.DEFAULT_H3_RES
@@ -32,11 +32,14 @@ class DriveshedTestConfig:
 
 def _city_aliases() -> Dict[str, Sequence[str]]:
     return {
+        "baltimore": ("Baltimore",),
+        "leavenworth wa": ("Leavenworth WA", "Leavenworth", "Leavenworth (Chelan County)"),
+        "fargo": ("Fargo",),
+        "park rapids": ("Park Rapids",),
         "christiansburg": ("Christiansburg",),
         "knoxville": ("Knoxville",),
         "nyc": ("NYC", "New York City", "Manhattan"),
         "huntsville": ("Huntsville",),
-        "pasadena": ("Pasadena",),
     }
 
 
@@ -181,7 +184,11 @@ def run_driveshed_test(
         h3_cell_col="h3_cell",
     )
     if not upsampled_cells_gdf.empty:
-        upsampled_polygons_gdf = dshed.dissolve_upsampled_driveshed_cells(upsampled_cells_gdf)
+        upsampled_polygons_gdf = dshed.dissolve_upsampled_driveshed_cells(
+            upsampled_cells_gdf,
+            source_cells_gdf=driveshed_cells_gdf,
+            h3_cell_col="h3_cell",
+        )
         layers.append(("driveshed_cells_upsampled", upsampled_cells_gdf))
         layers.append(("driveshed_polygons_upsampled", upsampled_polygons_gdf))
 
@@ -194,7 +201,7 @@ def run_driveshed_test(
 
 
 if __name__ == "__main__":
-    vintage = 1
+    vintage = 2
     output_dir = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
     csv_file = os.path.join(os.path.dirname(__file__), "osm_scale_calibration.csv")
     output_gpkg = os.path.join(output_dir, f"h3_driveshed_vintage{vintage}.gpkg")

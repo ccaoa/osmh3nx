@@ -13,7 +13,6 @@ from shapely.geometry import LineString, Point, Polygon
 import h3
 
 import calibrate as calx
-import h3_hierarchy as hhier
 import network_h3
 import network_osm
 
@@ -23,7 +22,7 @@ DEFAULT_CALIBRATION_PROFILE_NAME: str = calx.DEFAULT_PROFILE_NAME
 DEFAULT_CALIBRATION_PROFILE = calx.get_calibration_profile(DEFAULT_CALIBRATION_PROFILE_NAME)
 DEFAULT_H3_RES: int = calx.get_default_h3_res(DEFAULT_CALIBRATION_PROFILE)
 DEFAULT_H3_WEIGHT_ATTR: str = calx.get_default_query_weight_attr(DEFAULT_CALIBRATION_PROFILE)
-DEFAULT_SEARCH_BUFFER_FACTOR: float = 24.854847689493358*2
+DEFAULT_SEARCH_BUFFER_FACTOR: float = 62.13711922373339  # 100 KM # 24.854847689493358*2  # 80 KM
 UPSAMPLE_META_COLUMNS: Tuple[str, ...] = (
     "pair_id",
     "count",
@@ -287,39 +286,46 @@ def aggregate_driveshed_cells_to_parent_layer(
         return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
     if h3_cell_col not in reachable_cells_gdf.columns:
         raise ValueError(f"Column '{h3_cell_col}' not found in reachable_cells_gdf.")
+    work = reachable_cells_gdf.copy()
+    work[h3_cell_col] = work[h3_cell_col].astype(str)
+    if "h3_res" in work.columns:
+        work["source_h3_res"] = work["h3_res"].astype(int)
+    else:
+        work["source_h3_res"] = work[h3_cell_col].map(lambda cell: int(h3.get_resolution(str(cell))))
 
-    group_cols = [col for col in UPSAMPLE_META_COLUMNS if col in reachable_cells_gdf.columns]
-    if "h3_res" in reachable_cells_gdf.columns:
-        group_cols.append("h3_res")
+    if bool((work["source_h3_res"] < int(target_res)).any()):
+        bad_res = int(work.loc[work["source_h3_res"] < int(target_res), "source_h3_res"].min())
+        raise ValueError(f"target_res={target_res} is finer than source_h3_res={bad_res}.")
 
-    out_frames: List[gpd.GeoDataFrame] = []
-    grouped = (
-        reachable_cells_gdf.groupby(group_cols, dropna=False)
-        if group_cols
-        else [((), reachable_cells_gdf)]
+    work["parent_h3_cell"] = work[h3_cell_col].map(
+        lambda cell: h3.cell_to_parent(str(cell), int(target_res))
     )
 
-    for _, grp in grouped:
-        parent_gdf = hhier.aggregate_h3_gdf_to_parent_gdf(grp, target_res, h3_cell_col=h3_cell_col)
-        if parent_gdf.empty:
-            continue
+    group_cols = [col for col in UPSAMPLE_META_COLUMNS if col in work.columns]
+    group_cols.extend(["source_h3_res", "parent_h3_cell"])
 
-        meta = grp.iloc[0]
-        source_res = int(meta["h3_res"]) if "h3_res" in grp.columns else int(h3.get_resolution(str(meta[h3_cell_col])))
-        for col in UPSAMPLE_META_COLUMNS:
-            if col in grp.columns:
-                parent_gdf[col] = meta[col]
+    agg_map: Dict[str, tuple[str, str]] = {
+        "n_child_cells": (h3_cell_col, "size"),
+    }
+    if "travel_time_sec" in work.columns:
+        agg_map["median_travel_time_sec"] = ("travel_time_sec", "median")
+    if "travel_time_minutes" in work.columns:
+        agg_map["median_travel_time_min"] = ("travel_time_minutes", "median")
 
-        parent_gdf["source_h3_res"] = int(source_res)
-        parent_gdf["h3_res"] = int(target_res)
-        parent_gdf["upsampled_source_h3_res"] = int(source_res)
-        parent_gdf["upsampled_target_h3_res"] = int(target_res)
-        out_frames.append(parent_gdf)
-
-    if not out_frames:
+    parent_df = (
+        work.groupby(group_cols, dropna=False)
+        .agg(**agg_map)
+        .reset_index()
+        .rename(columns={"parent_h3_cell": "h3_cell"})
+    )
+    if parent_df.empty:
         return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
 
-    return gpd.GeoDataFrame(pd.concat(out_frames, ignore_index=True), geometry="geometry", crs="EPSG:4326")
+    parent_df["h3_res"] = int(target_res)
+    parent_df["upsampled_source_h3_res"] = parent_df["source_h3_res"].astype(int)
+    parent_df["upsampled_target_h3_res"] = int(target_res)
+    parent_df["geometry"] = parent_df["h3_cell"].map(_build_cell_polygon)
+    return gpd.GeoDataFrame(parent_df, geometry="geometry", crs="EPSG:4326")
 
 
 def aggregate_driveshed_cells_to_parent_layers(
@@ -347,6 +353,9 @@ def aggregate_driveshed_cells_to_parent_layers(
 
 def dissolve_upsampled_driveshed_cells(
     upsampled_cells_gdf: gpd.GeoDataFrame,
+    *,
+    source_cells_gdf: Optional[gpd.GeoDataFrame] = None,
+    h3_cell_col: str = "h3_cell",
 ) -> gpd.GeoDataFrame:
     """
     Dissolve upsampled parent cells into one driveshed polygon per origin and target resolution.
@@ -358,6 +367,31 @@ def dissolve_upsampled_driveshed_cells(
     for col in ("source_h3_res", "h3_res", "upsampled_source_h3_res", "upsampled_target_h3_res"):
         if col in upsampled_cells_gdf.columns:
             group_cols.append(col)
+
+    source_median_lookup: Dict[Tuple[Any, ...], Dict[str, float]] = {}
+    if source_cells_gdf is not None and not source_cells_gdf.empty:
+        source_work = source_cells_gdf.copy()
+        source_work[h3_cell_col] = source_work[h3_cell_col].astype(str)
+        if "h3_res" in source_work.columns:
+            source_work["source_h3_res"] = source_work["h3_res"].astype(int)
+        else:
+            source_work["source_h3_res"] = source_work[h3_cell_col].map(lambda cell: int(h3.get_resolution(str(cell))))
+
+        source_group_cols = [col for col in UPSAMPLE_META_COLUMNS if col in source_work.columns]
+        source_group_cols.append("source_h3_res")
+        source_agg_map: Dict[str, tuple[str, str]] = {}
+        if "travel_time_sec" in source_work.columns:
+            source_agg_map["median_travel_time_sec"] = ("travel_time_sec", "median")
+        if "travel_time_minutes" in source_work.columns:
+            source_agg_map["median_travel_time_min"] = ("travel_time_minutes", "median")
+        if source_agg_map:
+            source_summary = source_work.groupby(source_group_cols, dropna=False).agg(**source_agg_map).reset_index()
+            source_median_lookup = {
+                tuple(row[col] for col in source_group_cols): {
+                    metric: float(row[metric]) for metric in source_agg_map
+                }
+                for _, row in source_summary.iterrows()
+            }
 
     out_rows: List[Dict[str, Any]] = []
     grouped = (
@@ -378,6 +412,14 @@ def dissolve_upsampled_driveshed_cells(
             row[col] = meta[col]
         row["n_cells"] = int(len(grp))
         row["n_child_cells"] = int(grp["n_child_cells"].fillna(0).astype(int).sum()) if "n_child_cells" in grp.columns else int(len(grp))
+        lookup_cols = [col for col in UPSAMPLE_META_COLUMNS if col in grp.columns] + (
+            ["source_h3_res"] if "source_h3_res" in grp.columns else []
+        )
+        if lookup_cols:
+            lookup_key = tuple(meta[col] for col in lookup_cols)
+            lookup_metrics = source_median_lookup.get(lookup_key)
+            if lookup_metrics:
+                row.update(lookup_metrics)
         row["geometry"] = geom
         out_rows.append(row)
 
