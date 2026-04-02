@@ -23,7 +23,7 @@ class DriveshedTestConfig:
     max_travel_minutes: float = 15.0
     weight_attr: str = dshed.DEFAULT_H3_WEIGHT_ATTR
     search_buffer_speed_mph: float = 60.0
-    search_buffer_factor: float = 1.4
+    search_buffer_factor: float = dshed.DEFAULT_SEARCH_BUFFER_FACTOR
     search_min_buffer_miles: float = 2.0
     snap_max_k: int = 10
     osm_cache_dir: str | None = "cache"
@@ -194,7 +194,7 @@ def run_driveshed_test(
 
 
 if __name__ == "__main__":
-    vintage = 0
+    vintage = 1
     output_dir = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
     csv_file = os.path.join(os.path.dirname(__file__), "osm_scale_calibration.csv")
     output_gpkg = os.path.join(output_dir, f"h3_driveshed_vintage{vintage}.gpkg")
