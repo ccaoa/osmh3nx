@@ -1,0 +1,85 @@
+name: Sync Version and Update README Badge
+# Source version from `pyproject.toml`'s `version` variable
+
+on:
+  push:
+    branches:
+      - 'dev/**'
+      - staging
+      - main
+
+jobs:
+  update-version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '>=3.11'
+
+      - name: Set Local Time Zone to Eastern Time
+        run: |
+          sudo timedatectl set-timezone America/New_York
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install toml
+
+      - name: Read version from pyproject.toml
+        id: read_version
+        run: |
+          version=$(python -c "import toml; data=toml.load('pyproject.toml'); print(data.get('version', data.get('project', {}).get('version', '')))") 
+          echo "version=$version" >> $GITHUB_ENV
+          echo "version=$version" >> $GITHUB_OUTPUT
+
+      - name: Update ccaoa/__version__.py
+        run: |
+          # Use the version from GITHUB_ENV
+          echo "__version__ = \"${version}\"" > ccaoa/__version__.py
+
+      - name: Prepare version for badge
+        id: prep_badge
+        run: |
+          version_formatted_for_badge=$(echo "$version" | sed 's/-/--/g')
+          echo "version_formatted_for_badge=$version_formatted_for_badge" >> $GITHUB_ENV
+
+      - name: Check current version badge in README
+        id: check_readme
+        run: |
+          current_badge=$(grep -oP '(?<=version-)[0-9]+\.[0-9]+(\.[0-9]+)?(--[a-zA-Z0-9\.]+)?' README.md)
+          echo "current_badge=$current_badge" >> $GITHUB_ENV
+
+      - name: Compare versions and update files if needed
+        id: update_version
+        continue-on-error: true  # Allow failure so we can catch it below
+        run: |
+          # Use the environment variables set earlier
+          version_formatted_for_badge="${{ env.version_formatted_for_badge }}"
+          current_badge="${{ env.current_badge }}"
+          if [ "$version_formatted_for_badge" != "$current_badge" ]; then
+            export TZ=America/New_York
+            # Update the README badge with the new version
+            sed -i "s/\(version-\)[0-9]\+\.[0-9]\+\(\.[0-9]\+\)\?\(--[a-zA-Z0-9\.]\+\)\?/\1$version_formatted_for_badge/" README.md
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add ccaoa/__version__.py README.md
+            git commit -m "Update version to ${{ env.version }} on ${{ github.ref_name }} branch"
+            git push
+          else
+            echo "Version is up to date at ${{ env.version }}"
+          fi
+
+      - name: Create Pull Request for version update if commit failed
+        if: ${{ steps.update_version.outcome == 'failure' }}
+        uses: peter-evans/create-pull-request@v6.0.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "Update version to ${{ env.version }} on ${{ github.ref_name }} branch"
+          title: "(Auto) Update version to ${{ env.version }} on ${{ github.ref_name }}"
+          branch: auto/version-update
+          labels: management
+          body: "Automated update of version and README badge. The version has been updated to ${{ env.version }} on branch ${{ github.ref_name }} using [create-pull-request](https://github.com/peter-evans/create-pull-request) GitHub action."
