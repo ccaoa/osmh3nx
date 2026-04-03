@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import geopandas as gpd
@@ -159,6 +160,11 @@ def _build_cell_polygon(cell: str) -> Polygon:
     boundary_latlng = h3.cell_to_boundary(cell)
     boundary_lnglat = [(lng, lat) for (lat, lng) in boundary_latlng]
     return Polygon(boundary_lnglat)
+
+
+def _log(message: str) -> None:
+    timestamp = pd.Timestamp.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    print(f"[{timestamp}] {message}", flush=True)
 
 
 def _build_reachable_cells_gdf(
@@ -444,6 +450,7 @@ def build_h3_driveshed_from_point(
     search_buffer_factor: float = DEFAULT_SEARCH_BUFFER_FACTOR,
     search_min_buffer_miles: float = 2.0,
     snap_max_k: int = 10,
+    progress_label: Optional[str] = None,
 ) -> DriveshedResult:
     """
     Build an H3 driveshed from a single origin point.
@@ -468,10 +475,14 @@ def build_h3_driveshed_from_point(
 
     origin_wgs84 = _ensure_wgs84_point(origin)
     cutoff_seconds = float(max_travel_minutes) * SECONDS_PER_MINUTE
+    total_started = perf_counter()
+    label_prefix = f"{progress_label} " if progress_label else ""
 
     if h3_graph is None:
         if G_osm is None:
             if search_polygon_wgs84 is None:
+                search_polygon_started = perf_counter()
+                _log(f"{label_prefix}building driveshed search polygon")
                 search_polygon_wgs84 = build_driveshed_search_polygon(
                     origin_wgs84,
                     max_travel_minutes=max_travel_minutes,
@@ -479,12 +490,25 @@ def build_h3_driveshed_from_point(
                     buffer_factor=search_buffer_factor,
                     min_buffer_miles=search_min_buffer_miles,
                 )
+                _log(
+                    f"{label_prefix}search polygon ready "
+                    f"(elapsed_sec={perf_counter() - search_polygon_started:.1f})"
+                )
+            osm_started = perf_counter()
+            _log(f"{label_prefix}loading OSM drive graph")
             G_osm = network_osm.download_osm_drive_graph_for_polygon(
                 search_polygon_wgs84,
                 cache_dir=osm_cache_dir,
                 force_refresh=osm_force_refresh,
             )
+            _log(
+                f"{label_prefix}OSM drive graph ready "
+                f"(nodes={G_osm.number_of_nodes()}, edges={G_osm.number_of_edges()}, "
+                f"elapsed_sec={perf_counter() - osm_started:.1f})"
+            )
 
+        h3_started = perf_counter()
+        _log(f"{label_prefix}building calibrated H3 graph")
         h3_graph, active_profile = calx.build_calibrated_h3_graph_from_osm(
             G_osm,
             h3_res=resolved_h3_res,
@@ -492,6 +516,11 @@ def build_h3_driveshed_from_point(
             profile_overrides=calibration_profile_overrides,
         )
         profile = active_profile
+        _log(
+            f"{label_prefix}calibrated H3 graph ready "
+            f"(nodes={h3_graph.number_of_nodes()}, edges={h3_graph.number_of_edges()}, "
+            f"elapsed_sec={perf_counter() - h3_started:.1f})"
+        )
     else:
         graph_h3_res = h3_graph.graph.get("h3_res")
         if graph_h3_res is not None and int(graph_h3_res) != int(resolved_h3_res):
@@ -511,12 +540,21 @@ def build_h3_driveshed_from_point(
 
     _validate_weight_attr(h3_graph, resolved_weight_attr)
 
+    snap_started = perf_counter()
+    _log(f"{label_prefix}snapping origin cell to H3 graph")
     graph_nodes = set(h3_graph.nodes)
     origin_cell = h3.latlng_to_cell(origin_wgs84.y, origin_wgs84.x, resolved_h3_res)
     origin_cell_graph = network_h3.snap_cell_to_graph(origin_cell, graph_nodes, max_k=snap_max_k)
     if origin_cell_graph is None:
         raise ValueError("Origin cell could not be snapped to the H3 graph within snap_max_k.")
+    _log(
+        f"{label_prefix}origin cell snapped "
+        f"(origin_h3_cell={origin_cell}, origin_h3_cell_graph={origin_cell_graph}, "
+        f"elapsed_sec={perf_counter() - snap_started:.1f})"
+    )
 
+    dijkstra_started = perf_counter()
+    _log(f"{label_prefix}running single-source Dijkstra")
     distances, paths = nx.single_source_dijkstra(
         h3_graph,
         source=origin_cell_graph,
@@ -525,7 +563,13 @@ def build_h3_driveshed_from_point(
     )
     distances = {str(cell): float(time_sec) for cell, time_sec in distances.items()}
     paths = {str(cell): [str(step) for step in path] for cell, path in paths.items()}
+    _log(
+        f"{label_prefix}Dijkstra finished "
+        f"(reachable_nodes={len(distances)}, elapsed_sec={perf_counter() - dijkstra_started:.1f})"
+    )
 
+    output_started = perf_counter()
+    _log(f"{label_prefix}building driveshed output layers")
     reachable_cells_gdf = _build_reachable_cells_gdf(
         distances=distances,
         paths=paths,
@@ -538,6 +582,12 @@ def build_h3_driveshed_from_point(
         weight_attr=resolved_weight_attr,
     )
     driveshed_gdf = _dissolve_reachable_cells(reachable_cells_gdf)
+    _log(
+        f"{label_prefix}driveshed output layers ready "
+        f"(cells={len(reachable_cells_gdf)}, edges={len(reachable_edges_gdf)}, "
+        f"elapsed_sec={perf_counter() - output_started:.1f}, "
+        f"elapsed_total_sec={perf_counter() - total_started:.1f})"
+    )
 
     return DriveshedResult(
         origin_point_wgs84=origin_wgs84,

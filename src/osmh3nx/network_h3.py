@@ -695,6 +695,7 @@ def assign_nearest_target_by_h3_network(
     out_distance_col: Optional[str] = "h3_travel_miles",
     debug_route_breakdown_source_idx: Optional[int] = 1,
     debug_route_breakdown_max_steps: Optional[int] = None,
+    snap_max_k: int = 10,
 ) -> gpd.GeoDataFrame:
     """
     For each source point, find the closest target point by network travel time on the H3 graph,
@@ -733,7 +734,7 @@ def assign_nearest_target_by_h3_network(
 
     # Snap target cells into the graph
     tgt["h3_cell_graph"] = tgt["h3_cell"].apply(
-        lambda c: snap_cell_to_graph(c, graph_nodes, max_k=10)
+        lambda c: snap_cell_to_graph(c, graph_nodes, max_k=snap_max_k)
     )
 
     # Drop any targets that could not be snapped
@@ -785,7 +786,7 @@ def assign_nearest_target_by_h3_network(
         s_cell = h3.latlng_to_cell(geom.y, geom.x, h3_res)
 
         # Snap source cell into graph
-        s_cell_graph = snap_cell_to_graph(s_cell, graph_nodes, max_k=10)
+        s_cell_graph = snap_cell_to_graph(s_cell, graph_nodes, max_k=snap_max_k)
 
         # Diagnostics
         if i < 10:
