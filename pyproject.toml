@@ -46,6 +46,12 @@ development = [
     "black",
     "pip-tools",
 ]
+typecheck = [
+    "pandas-stubs",
+    "types-geopandas",
+    "types-networkx",
+    "types-shapely",
+]
 
 [project.scripts]
 osmh3nx-driveshed = "osmh3nx.cli.driveshed:main"
