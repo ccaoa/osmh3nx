@@ -668,6 +668,7 @@ def run_h3_osm_calibration(
 
 if __name__ == "__main__":
     ox.settings.use_cache = True
+    ox.settings.cache_folder = REPO_CACHE_DIR
     ox.settings.log_console = True
 
     vintage = 11

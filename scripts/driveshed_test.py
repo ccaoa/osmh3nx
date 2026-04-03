@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
 import geopandas as gpd
+import osmnx as ox
 import pandas as pd
 
 try:
@@ -211,6 +212,9 @@ def run_driveshed_test(
 
 
 if __name__ == "__main__":
+    ox.settings.use_cache = True
+    ox.settings.cache_folder = REPO_CACHE_DIR
+
     vintage = 3
     output_dir = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
     csv_file = str(repo_root() / "osm_scale_calibration.csv")

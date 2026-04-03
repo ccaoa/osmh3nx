@@ -35,6 +35,7 @@ dependencies = [
     "numpy",
     "osmnx",
     "pandas",
+    "platformdirs",
     "pyproj",
     "shapely>=2.0",
     "scikit-learn",

@@ -10,6 +10,7 @@ import geopandas as gpd
 import networkx as nx
 import osmnx as ox
 import pyproj
+from platformdirs import user_cache_dir
 from shapely.geometry import LineString, Point, Polygon, box
 from shapely import wkt as shapely_wkt
 
@@ -21,7 +22,10 @@ def miles_to_meters(miles: float) -> float:
 
 
 def _default_cache_dir() -> Path:
-    return Path.cwd() / "cache"
+    return Path(user_cache_dir("osmh3nx"))
+
+
+DEFAULT_CACHE_DIR: str = str(_default_cache_dir())
 
 
 def _graph_cache_key(
@@ -181,7 +185,7 @@ def download_osm_drive_graph_for_polygon(
     polygon_wgs84: Polygon,
     *,
     simplify: bool = True,
-    cache_dir: Optional[str] = "cache",
+    cache_dir: Optional[str] = DEFAULT_CACHE_DIR,
     force_refresh: bool = False,
 ) -> nx.MultiDiGraph:
     """
@@ -195,6 +199,7 @@ def download_osm_drive_graph_for_polygon(
         network_type=network_type,
     )
     cache_path: Optional[Path] = None
+    base_cache: Optional[Path] = None
     if cache_dir is not None:
         base_cache = Path(cache_dir) if cache_dir else _default_cache_dir()
         if not base_cache.is_absolute():
@@ -220,11 +225,17 @@ def download_osm_drive_graph_for_polygon(
         G = _normalize_loaded_graph(G)
         loaded_from_cache = True
     else:
-        G = ox.graph_from_polygon(polygon_wgs84, network_type=network_type, simplify=simplify)
-        G = ox.add_edge_speeds(G)
-        G = ox.add_edge_travel_times(G)
-        if cache_path is not None:
-            ox.save_graphml(G, filepath=str(cache_path))
+        prior_cache_folder = ox.settings.cache_folder
+        try:
+            if base_cache is not None:
+                ox.settings.cache_folder = str(base_cache)
+            G = ox.graph_from_polygon(polygon_wgs84, network_type=network_type, simplify=simplify)
+            G = ox.add_edge_speeds(G)
+            G = ox.add_edge_travel_times(G)
+            if cache_path is not None:
+                ox.save_graphml(G, filepath=str(cache_path))
+        finally:
+            ox.settings.cache_folder = prior_cache_folder
 
     # Guardrail: if cache declares WGS84 but coordinates are not WGS84-like,
     # rebuild to avoid downstream CRS/projection corruption.
@@ -236,11 +247,17 @@ def download_osm_drive_graph_for_polygon(
         cache_invalid = True
 
     if cache_invalid:
-        G = ox.graph_from_polygon(polygon_wgs84, network_type=network_type, simplify=simplify)
-        G = ox.add_edge_speeds(G)
-        G = ox.add_edge_travel_times(G)
-        if cache_path is not None:
-            ox.save_graphml(G, filepath=str(cache_path))
+        prior_cache_folder = ox.settings.cache_folder
+        try:
+            if base_cache is not None:
+                ox.settings.cache_folder = str(base_cache)
+            G = ox.graph_from_polygon(polygon_wgs84, network_type=network_type, simplify=simplify)
+            G = ox.add_edge_speeds(G)
+            G = ox.add_edge_travel_times(G)
+            if cache_path is not None:
+                ox.save_graphml(G, filepath=str(cache_path))
+        finally:
+            ox.settings.cache_folder = prior_cache_folder
 
     # Ensure required attrs exist on loaded graphs from any older cache versions.
     if not all("speed_kph" in data for _, _, _, data in G.edges(keys=True, data=True)):

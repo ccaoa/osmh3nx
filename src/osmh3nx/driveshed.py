@@ -22,6 +22,7 @@ DEFAULT_CALIBRATION_PROFILE_NAME: str = calx.DEFAULT_PROFILE_NAME
 DEFAULT_CALIBRATION_PROFILE = calx.get_calibration_profile(DEFAULT_CALIBRATION_PROFILE_NAME)
 DEFAULT_H3_RES: int = calx.get_default_h3_res(DEFAULT_CALIBRATION_PROFILE)
 DEFAULT_H3_WEIGHT_ATTR: str = calx.get_default_query_weight_attr(DEFAULT_CALIBRATION_PROFILE)
+DEFAULT_OSM_CACHE_DIR: str = network_osm.DEFAULT_CACHE_DIR
 DEFAULT_SEARCH_BUFFER_FACTOR: float = 62.13711922373339  # 100 KM # 24.854847689493358*2  # 80 KM
 UPSAMPLE_META_COLUMNS: Tuple[str, ...] = (
     "pair_id",
@@ -437,7 +438,7 @@ def build_h3_driveshed_from_point(
     h3_graph: Optional[nx.Graph] = None,
     G_osm: Optional[nx.MultiDiGraph] = None,
     search_polygon_wgs84: Optional[Polygon] = None,
-    osm_cache_dir: Optional[str] = "cache",
+    osm_cache_dir: Optional[str] = DEFAULT_OSM_CACHE_DIR,
     osm_force_refresh: bool = False,
     search_buffer_speed_mph: float = 60.0,
     search_buffer_factor: float = DEFAULT_SEARCH_BUFFER_FACTOR,

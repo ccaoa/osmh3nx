@@ -28,6 +28,8 @@ import geopandas as gpd
 import h3
 from h3 import LatLngMultiPoly, LatLngPoly
 
+from . import network_osm as onetx
+
 METERS_PER_MILE: float = 1609.344
 KM_PER_MILE: float = 1.609344
 SECONDS_PER_HOUR: float = 3600.0
@@ -119,14 +121,7 @@ def download_osm_graph_drive(polygon_wgs84: Polygon) -> nx.MultiDiGraph:
     Download a drivable street network from OSM within the given polygon.
     Adds edge speeds and travel times.
     """
-    # network_type can be "drive", "walk", etc.
-    G = ox.graph_from_polygon(polygon_wgs84, network_type="drive", simplify=True)
-
-    # Add per-edge speed_kph and travel_time (seconds)
-    G = ox.add_edge_speeds(G)         # imputes speed_kph where missing
-    G = ox.add_edge_travel_times(G)   # sets travel_time in seconds based on length and speed_kph
-
-    return G
+    return onetx.download_osm_drive_graph_for_polygon(polygon_wgs84)
 
 
 def _ring_lnglat_to_latlng(ring_lnglat: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
