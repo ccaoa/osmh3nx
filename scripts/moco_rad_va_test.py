@@ -11,8 +11,6 @@ import osmnx as ox
 from shapely.geometry import Point, Polygon
 from shapely.ops import unary_union
 
-from ccaoa import core as cf, raccoon as rc, gis
-
 try:
     from _bootstrap import ensure_src_on_path
 except ImportError:
@@ -23,6 +21,9 @@ ensure_src_on_path()
 from osmh3nx import calibrate as calx
 from osmh3nx import network_h3 as hnetx
 from osmh3nx.io import write_layers_to_gpkg
+
+OUTPUT_DIR: str = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
+
 
 @dataclass(frozen=True)
 class StudyArea:
@@ -38,9 +39,15 @@ def get_study_area_radford_montgomery(output_osm_test: bool = False) -> StudyAre
     # OSMnx geocoding returns a GeoDataFrame in EPSG:4326
     gdf_radford = ox.geocode_to_gdf("Radford, Virginia, USA")
     gdf_monty = ox.geocode_to_gdf("Montgomery County, Virginia, USA")
-    if cf.string_to_bool(output_osm_test):
-        gis.gdf_to_file(gdf_radford, os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),"radford_osm.geojson"), overwrite=True)
-        gis.gdf_to_file(gdf_monty, os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),"moco_osm.geojson"), overwrite=True)
+    if output_osm_test:
+        output_gpkg = os.path.join(OUTPUT_DIR, "moco_radford_osm_context.gpkg")
+        write_layers_to_gpkg(
+            output_gpkg,
+            layers=[
+                ("radford_osm_boundary", gdf_radford),
+                ("moco_osm_boundary", gdf_monty),
+            ],
+        )
 
     geom = unary_union([gdf_radford.geometry.iloc[0], gdf_monty.geometry.iloc[0]])
     if geom.geom_type == "MultiPolygon":
@@ -106,9 +113,17 @@ if __name__ == "__main__":
     print(area)
     print(G_osm)
     print(H_h3)
-    # print(h3_grid)
     if output_tests:
-        gis.gdf_to_file(h3_grid,os.path.join(os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),f"mocorad_h3_grid_rez{str(resolution_h3_cell)}.geojson"), overwrite=True)
+        output_gpkg = os.path.join(
+            OUTPUT_DIR,
+            f"moco_radford_debug_rez{str(resolution_h3_cell)}.gpkg",
+        )
+        write_layers_to_gpkg(
+            output_gpkg,
+            layers=[
+                (f"h3_grid_rez{str(resolution_h3_cell)}", h3_grid),
+            ],
+        )
     print()
     if H_h3.is_directed():
         weak_component_count = nx.number_weakly_connected_components(H_h3)
@@ -185,7 +200,7 @@ if __name__ == "__main__":
         # XPRT
         runtry = 9
         output_gpkg = os.path.join(
-            os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing"),
+            OUTPUT_DIR,
             f"moco_radford_test_{str(runtry)}_rez{str(resolution_h3_cell)}.gpkg",
         )
         written_layers = write_layers_to_gpkg(
@@ -201,5 +216,12 @@ if __name__ == "__main__":
 
     print(out[["src_id", "nearest_tgt_id", "h3_travel_miles", "h3_travel_time", "h3_travel_time_postcalibrated"]])
 
-    cf.runtime(start)
-    # return out
+    time_dot_time = time.time()
+    time_diff = time_dot_time - start
+
+    hours = int(time_diff / 3600)
+    hours_remainder = time_diff % 3600
+    minutes = int(hours_remainder / 60)
+    minutes_remainder = hours_remainder % 60
+    seconds = int(minutes_remainder)
+    print("Run Time:", hours, "hr,", minutes, "min,", seconds, "sec.")

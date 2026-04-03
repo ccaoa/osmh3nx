@@ -5,8 +5,29 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "osmh3nx"
 version = "0.1.0"
-description = "H3-over-OSM routing, drivesheds, and network analysis tools."
+description = "Hexagonal H3 routing, drivesheds, and scalable network analysis over OpenStreetMap."
 requires-python = ">=3.11"
+authors = [
+    { name = "Alex Cooper" },
+    { email = "jacooper1317@gmail.com" }
+]
+keywords = [
+    "h3",
+    "openstreetmap",
+    "osmnx",
+    "routing",
+    "driveshed",
+    "geospatial",
+    "network-analysis",
+    "GIS",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: GIS",
+]
 dependencies = [
     "geopandas",
     "h3",
@@ -16,6 +37,7 @@ dependencies = [
     "pandas",
     "pyproj",
     "shapely>=2.0",
+    "scikit-learn",
 ]
 
 [project.optional-dependencies]
