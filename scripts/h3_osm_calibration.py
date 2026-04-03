@@ -27,6 +27,8 @@ from osmh3nx import network_osm as onetx
 from osmh3nx.data import build_od_points_gdf, load_od_pairs
 from osmh3nx.io import write_layers_to_gpkg
 
+REPO_CACHE_DIR: str = str(repo_root() / "cache")
+
 
 @dataclass(frozen=True)
 class CalibrationConfig:
@@ -39,7 +41,7 @@ class CalibrationConfig:
     report_weight_attr: Optional[str] = None
     shape_corridor_meters: float = 100.0
     snap_k: int = 10
-    osm_cache_dir: Optional[str] = "cache"
+    osm_cache_dir: Optional[str] = REPO_CACHE_DIR
     osm_force_refresh: bool = False  #  True  #
 
 def _h3_cell_to_polygon(cell: str) -> Polygon:
@@ -668,13 +670,13 @@ if __name__ == "__main__":
     ox.settings.use_cache = True
     ox.settings.log_console = True
 
-    vintage = 10
+    vintage = 11
     output_dir = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
     csv_file = str(repo_root() / "osm_scale_calibration.csv")
     output_gpkg = os.path.join(output_dir, f"h3_osm_calibration_vintage{vintage}.gpkg")
 
     cfg = CalibrationConfig(
-        h3_resolutions=(7, 8, 9, 10),
+        h3_resolutions=(8, 9, 10),#7, 8, 9, 10),
         calibration_profile_name=calx.DEFAULT_PROFILE_NAME,
         bbox_buffer_miles=5.0,
         shape_corridor_meters=100.0,

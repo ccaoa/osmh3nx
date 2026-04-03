@@ -20,6 +20,8 @@ from osmh3nx import driveshed as dshed
 from osmh3nx.data import load_od_pairs
 from osmh3nx.io import write_layers_to_gpkg
 
+REPO_CACHE_DIR: str = str(repo_root() / "cache")
+
 
 @dataclass(frozen=True)
 class DriveshedTestConfig:
@@ -34,7 +36,7 @@ class DriveshedTestConfig:
     search_buffer_factor: float = dshed.DEFAULT_SEARCH_BUFFER_FACTOR
     search_min_buffer_miles: float = 2.0
     snap_max_k: int = 10
-    osm_cache_dir: str | None = "cache"
+    osm_cache_dir: str | None = REPO_CACHE_DIR
     osm_force_refresh: bool = False
 
 
@@ -209,7 +211,7 @@ def run_driveshed_test(
 
 
 if __name__ == "__main__":
-    vintage = 2
+    vintage = 3
     output_dir = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
     csv_file = str(repo_root() / "osm_scale_calibration.csv")
     output_gpkg = os.path.join(output_dir, f"h3_driveshed_vintage{vintage}.gpkg")
