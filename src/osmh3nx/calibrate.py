@@ -58,9 +58,7 @@ PROFILE_REGISTRY: Dict[str, CalibrationProfile] = {
     ),
     "rez9_default": CalibrationProfile(
         name="rez9_default",
-        description=(
-            "Rez 9 variant of the current default calibrated timing profile."
-        ),
+        description=("Rez 9 variant of the current default calibrated timing profile."),
         default_h3_res=9,
     ),
 }

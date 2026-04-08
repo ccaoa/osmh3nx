@@ -67,7 +67,7 @@ def demo_radford_montgomery_pipeline(
     *,
     h3_res: int = 8,
     calibration_profile_name: str = calx.DEFAULT_PROFILE_NAME,
-    test_outs: bool = False
+    test_outs: bool = False,
 ) -> Tuple[StudyArea, nx.MultiDiGraph, nx.Graph, gpd.GeoDataFrame]:
     """
     Convenience function to build everything for the Radford + Montgomery test case.
@@ -82,19 +82,23 @@ def demo_radford_montgomery_pipeline(
     # TODO delete test prints; used for debugging
     print("H_h3 nodes:", H_h3.number_of_nodes())
     print("H_h3 edges:", H_h3.number_of_edges())
-    print("edge travel_time min/median/max:",
-          np.min([d["travel_time"] for _, _, d in H_h3.edges(data=True)]),
-          np.median([d["travel_time"] for _, _, d in H_h3.edges(data=True)]),
-          np.max([d["travel_time"] for _, _, d in H_h3.edges(data=True)]))
+    print(
+        "edge travel_time min/median/max:",
+        np.min([d["travel_time"] for _, _, d in H_h3.edges(data=True)]),
+        np.median([d["travel_time"] for _, _, d in H_h3.edges(data=True)]),
+        np.max([d["travel_time"] for _, _, d in H_h3.edges(data=True)]),
+    )
     #
-    h3_grid: gpd.GeoDataFrame = hnetx.build_h3_grid_gdf(area.polygon_wgs84, h3_res=h3_res)
+    h3_grid: gpd.GeoDataFrame = hnetx.build_h3_grid_gdf(
+        area.polygon_wgs84, h3_res=h3_res
+    )
     return area, G_osm, H_h3, h3_grid
-
 
 
 # Example usage (replace these with your real point layers):
 if __name__ == "__main__":
     import time
+
     start = time.time()
 
     ox.settings.use_cache = True
@@ -102,7 +106,9 @@ if __name__ == "__main__":
     resolution_h3_cell: int = 10
 
     output_tests: bool = False
-    area, G_osm, H_h3, h3_grid = demo_radford_montgomery_pipeline(h3_res=resolution_h3_cell, test_outs=output_tests)  # Returns StudyArea, nx.MultiDiGraph, nx.Graph, gpd.GeoDataFrame
+    area, G_osm, H_h3, h3_grid = demo_radford_montgomery_pipeline(
+        h3_res=resolution_h3_cell, test_outs=output_tests
+    )  # Returns StudyArea, nx.MultiDiGraph, nx.Graph, gpd.GeoDataFrame
     query_weight_attr = str(
         H_h3.graph.get(
             "default_query_weight_attr",
@@ -127,9 +133,13 @@ if __name__ == "__main__":
     print()
     if H_h3.is_directed():
         weak_component_count = nx.number_weakly_connected_components(H_h3)
-        weak_sizes = sorted((len(c) for c in nx.weakly_connected_components(H_h3)), reverse=True)
+        weak_sizes = sorted(
+            (len(c) for c in nx.weakly_connected_components(H_h3)), reverse=True
+        )
         strong_component_count = nx.number_strongly_connected_components(H_h3)
-        strong_sizes = sorted((len(c) for c in nx.strongly_connected_components(H_h3)), reverse=True)
+        strong_sizes = sorted(
+            (len(c) for c in nx.strongly_connected_components(H_h3)), reverse=True
+        )
         print("Weakly connected components:", weak_component_count)
         print("Largest weak components:", weak_sizes[:10])
         print("Strongly connected components:", strong_component_count)
@@ -147,7 +157,11 @@ if __name__ == "__main__":
 
     tgt_points = gpd.GeoDataFrame(
         {"tgt_id": [101, 102, 103]},
-        geometry=[Point(-80.57697081226758, 37.13176833876923), Point(-80.43, 37.21), Point(-80.32, 37.28)],
+        geometry=[
+            Point(-80.57697081226758, 37.13176833876923),
+            Point(-80.43, 37.21),
+            Point(-80.32, 37.28),
+        ],
         crs="EPSG:4326",
     )
 
@@ -160,7 +174,7 @@ if __name__ == "__main__":
         h3_graph=H_h3,
         h3_res=int(resolution_h3_cell),
         weight_attr=query_weight_attr,
-        out_path_col=pathcol
+        out_path_col=pathcol,
     )
 
     # Try to visualize the path taken here
@@ -177,9 +191,11 @@ if __name__ == "__main__":
         )
     )
     out["h3_travel_time_postcalibrated"] = out[pathcol].apply(
-        lambda p: hnetx.path_weight_sum(H_h3, p.split("|"), weight_attr=report_weight_attr)
-        if isinstance(p, str) and p.strip()
-        else np.nan
+        lambda p: (
+            hnetx.path_weight_sum(H_h3, p.split("|"), weight_attr=report_weight_attr)
+            if isinstance(p, str) and p.strip()
+            else np.nan
+        )
     )
 
     # Output the routes to GDF
@@ -191,7 +207,9 @@ if __name__ == "__main__":
         target_id_col="nearest_tgt_id",
     )
     # Get the actual h3 cells used for route
-    path_cells = hnetx.explode_paths_to_h3_cells(out, src_id_col="src_id", path_col="h3_path")
+    path_cells = hnetx.explode_paths_to_h3_cells(
+        out, src_id_col="src_id", path_col="h3_path"
+    )
     path_hexes = path_cells.merge(h3_grid, on="h3_cell", how="left")
     path_hexes = gpd.GeoDataFrame(path_hexes, geometry="geometry", crs=h3_grid.crs)
 
@@ -207,14 +225,27 @@ if __name__ == "__main__":
             output_gpkg,
             layers=[
                 (f"h3_routes_{str(runtry)}_rez{str(resolution_h3_cell)}", routes),
-                (f"h3_path_hexes_{str(runtry)}_rez{str(resolution_h3_cell)}", path_hexes),
+                (
+                    f"h3_path_hexes_{str(runtry)}_rez{str(resolution_h3_cell)}",
+                    path_hexes,
+                ),
                 (f"outtestresult_{str(runtry)}_rez{str(resolution_h3_cell)}", out),
             ],
         )
         print("Wrote GPKG:", output_gpkg)
         print("Layers written:", written_layers)
 
-    print(out[["src_id", "nearest_tgt_id", "h3_travel_miles", "h3_travel_time", "h3_travel_time_postcalibrated"]])
+    print(
+        out[
+            [
+                "src_id",
+                "nearest_tgt_id",
+                "h3_travel_miles",
+                "h3_travel_time",
+                "h3_travel_time_postcalibrated",
+            ]
+        ]
+    )
 
     time_dot_time = time.time()
     time_diff = time_dot_time - start

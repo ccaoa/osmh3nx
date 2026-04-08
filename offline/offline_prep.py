@@ -201,20 +201,31 @@ def _parse_resolutions(txt: str) -> Tuple[int, ...]:
 def _build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Prepare offline OSM+H3 routing bundle.")
     p.add_argument("--csv", required=True, help="Path to OD calibration CSV.")
-    p.add_argument("--out-dir", required=True, help="Output directory for offline bundle.")
-    p.add_argument("--resolutions", default="7,8,9,10", help="Comma-separated H3 resolutions.")
+    p.add_argument(
+        "--out-dir", required=True, help="Output directory for offline bundle."
+    )
+    p.add_argument(
+        "--resolutions", default="7,8,9,10", help="Comma-separated H3 resolutions."
+    )
     p.add_argument("--buffer-miles", type=float, default=15.0)
     p.add_argument("--sample-miles", type=float, default=0.25)
     p.add_argument("--combine-parallel", default="mean", choices=["min", "mean", "p25"])
     p.add_argument("--v-max-mph", type=float, default=35.0)
-    p.add_argument("--floor-speed-source", default="osm_median", choices=["vmax", "osm_median"])
+    p.add_argument(
+        "--floor-speed-source", default="osm_median", choices=["vmax", "osm_median"]
+    )
     p.add_argument("--min-osm-speed-mph", type=float, default=10.0 / hnetx.KM_PER_MILE)
     p.add_argument("--route-weight-attr", default="travel_time_route")
     p.add_argument("--route-floor-penalty-weight", type=float, default=0.35)
     p.add_argument("--no-step-floor", action="store_true")
     p.add_argument("--no-preserve-way-geometry", action="store_true")
     p.add_argument("--way-refine-max-depth", type=int, default=18)
-    p.add_argument("--max-pairs", type=int, default=None, help="Optional cap for number of OD pairs to prepare.")
+    p.add_argument(
+        "--max-pairs",
+        type=int,
+        default=None,
+        help="Optional cap for number of OD pairs to prepare.",
+    )
     p.add_argument("--overwrite", action="store_true")
     return p
 

@@ -26,7 +26,16 @@ REPO_CACHE_DIR: str = str(repo_root() / "cache")
 
 @dataclass(frozen=True)
 class DriveshedTestConfig:
-    requested_cities: Sequence[str] = ("Christiansburg", "Knoxville", "NYC", "Huntsville", "Baltimore", "Leavenworth WA", "Fargo", "Park Rapids")
+    requested_cities: Sequence[str] = (
+        "Christiansburg",
+        "Knoxville",
+        "NYC",
+        "Huntsville",
+        "Baltimore",
+        "Leavenworth WA",
+        "Fargo",
+        "Park Rapids",
+    )
     calibration_profile_name: str = calx.DEFAULT_PROFILE_NAME
     calibration_profile_overrides: Dict[str, Any] | None = None
     h3_res: int = dshed.DEFAULT_H3_RES
@@ -44,7 +53,11 @@ class DriveshedTestConfig:
 def _city_aliases() -> Dict[str, Sequence[str]]:
     return {
         "baltimore": ("Baltimore",),
-        "leavenworth wa": ("Leavenworth WA", "Leavenworth", "Leavenworth (Chelan County)"),
+        "leavenworth wa": (
+            "Leavenworth WA",
+            "Leavenworth",
+            "Leavenworth (Chelan County)",
+        ),
         "fargo": ("Fargo",),
         "park rapids": ("Park Rapids",),
         "christiansburg": ("Christiansburg",),
@@ -54,7 +67,9 @@ def _city_aliases() -> Dict[str, Sequence[str]]:
     }
 
 
-def _resolve_city_rows(od_pairs: pd.DataFrame, requested_cities: Sequence[str]) -> pd.DataFrame:
+def _resolve_city_rows(
+    od_pairs: pd.DataFrame, requested_cities: Sequence[str]
+) -> pd.DataFrame:
     rows: List[pd.Series] = []
     aliases = _city_aliases()
 
@@ -63,7 +78,9 @@ def _resolve_city_rows(od_pairs: pd.DataFrame, requested_cities: Sequence[str]) 
         city_names = aliases.get(key, (requested,))
         match = od_pairs[od_pairs["city"].isin(city_names)].copy()
         if match.empty:
-            raise ValueError(f"No calibration CSV row found for requested city '{requested}'.")
+            raise ValueError(
+                f"No calibration CSV row found for requested city '{requested}'."
+            )
 
         match = match.sort_values(["pair_id", "count"]).reset_index(drop=True)
         chosen = match.iloc[0].copy()
@@ -116,7 +133,9 @@ def run_driveshed_test(
 
     for _, row in selected.iterrows():
         origin_geom = row["origin_geom"]
-        print(f"Building driveshed for {row['requested_city']} -> {row['city']}, {row['state']} (pair_id={row['pair_id']})")
+        print(
+            f"Building driveshed for {row['requested_city']} -> {row['city']}, {row['state']} (pair_id={row['pair_id']})"
+        )
         result = dshed.build_h3_driveshed_from_point(
             origin_geom,
             max_travel_minutes=config.max_travel_minutes,
@@ -170,25 +189,65 @@ def run_driveshed_test(
             )
             search_rows.append(search_gdf)
 
-        polygon_rows.append(_append_origin_metadata(result.driveshed_gdf, row=row, result=result))
-        cell_rows.append(_append_origin_metadata(result.reachable_cells_gdf, row=row, result=result))
-        edge_rows.append(_append_origin_metadata(result.reachable_edges_gdf, row=row, result=result))
+        polygon_rows.append(
+            _append_origin_metadata(result.driveshed_gdf, row=row, result=result)
+        )
+        cell_rows.append(
+            _append_origin_metadata(result.reachable_cells_gdf, row=row, result=result)
+        )
+        edge_rows.append(
+            _append_origin_metadata(result.reachable_edges_gdf, row=row, result=result)
+        )
 
     layers = [
-        ("driveshed_origin_points", gpd.GeoDataFrame(pd.concat(origin_rows, ignore_index=True), geometry="geometry", crs="EPSG:4326")),
-        ("driveshed_polygons", gpd.GeoDataFrame(pd.concat(polygon_rows, ignore_index=True), geometry="geometry", crs="EPSG:4326")),
-        ("driveshed_cells", gpd.GeoDataFrame(pd.concat(cell_rows, ignore_index=True), geometry="geometry", crs="EPSG:4326")),
-        ("driveshed_edges", gpd.GeoDataFrame(pd.concat(edge_rows, ignore_index=True), geometry="geometry", crs="EPSG:4326")),
+        (
+            "driveshed_origin_points",
+            gpd.GeoDataFrame(
+                pd.concat(origin_rows, ignore_index=True),
+                geometry="geometry",
+                crs="EPSG:4326",
+            ),
+        ),
+        (
+            "driveshed_polygons",
+            gpd.GeoDataFrame(
+                pd.concat(polygon_rows, ignore_index=True),
+                geometry="geometry",
+                crs="EPSG:4326",
+            ),
+        ),
+        (
+            "driveshed_cells",
+            gpd.GeoDataFrame(
+                pd.concat(cell_rows, ignore_index=True),
+                geometry="geometry",
+                crs="EPSG:4326",
+            ),
+        ),
+        (
+            "driveshed_edges",
+            gpd.GeoDataFrame(
+                pd.concat(edge_rows, ignore_index=True),
+                geometry="geometry",
+                crs="EPSG:4326",
+            ),
+        ),
     ]
     if search_rows:
         layers.append(
             (
                 "driveshed_search_polygons",
-                gpd.GeoDataFrame(pd.concat(search_rows, ignore_index=True), geometry="geometry", crs="EPSG:4326"),
+                gpd.GeoDataFrame(
+                    pd.concat(search_rows, ignore_index=True),
+                    geometry="geometry",
+                    crs="EPSG:4326",
+                ),
             )
         )
 
-    driveshed_cells_gdf = next(gdf for layer_name, gdf in layers if layer_name == "driveshed_cells")
+    driveshed_cells_gdf = next(
+        gdf for layer_name, gdf in layers if layer_name == "driveshed_cells"
+    )
     upsampled_cells_gdf = dshed.aggregate_driveshed_cells_to_parent_layers(
         driveshed_cells_gdf,
         target_resolutions=config.upsampled_target_resolutions,

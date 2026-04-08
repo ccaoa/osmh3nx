@@ -37,7 +37,9 @@ def _cell_to_polygon(cell: str) -> Polygon:
     return Polygon(boundary_lnglat)
 
 
-def _safe_linestring_from_segments(segments: Sequence[LineString]) -> LineString | MultiLineString:
+def _safe_linestring_from_segments(
+    segments: Sequence[LineString],
+) -> LineString | MultiLineString:
     merged = linemerge(unary_union(list(segments)))
     if isinstance(merged, (LineString, MultiLineString)):
         return merged
@@ -86,7 +88,9 @@ def _edge_linestring_from_data(
     vx = G.nodes[v].get("x")
     vy = G.nodes[v].get("y")
     if ux is None or uy is None or vx is None or vy is None:
-        raise ValueError(f"Missing node coordinates for fallback geometry between {u} and {v}.")
+        raise ValueError(
+            f"Missing node coordinates for fallback geometry between {u} and {v}."
+        )
     return LineString([(float(ux), float(uy)), (float(vx), float(vy))])
 
 
@@ -144,7 +148,11 @@ def _osm_route_geometry_and_metrics(
         except Exception:
             pass
 
-    return _safe_linestring_from_segments(lines), float(travel_time_sec), float(length_m)
+    return (
+        _safe_linestring_from_segments(lines),
+        float(travel_time_sec),
+        float(length_m),
+    )
 
 
 def _write_layer(
@@ -218,7 +226,9 @@ def export_pair_routes_to_qgis(
                 "travel_time_sec": float(osm_time_sec),
                 "travel_miles": float(osm_length_m / hnetx.METERS_PER_MILE),
                 "n_route_nodes": int(len(osm_route_nodes)),
-                "geometry": gpd.GeoSeries([osm_geom], crs=Gp.graph["crs"]).to_crs("EPSG:4326").iloc[0],
+                "geometry": gpd.GeoSeries([osm_geom], crs=Gp.graph["crs"])
+                .to_crs("EPSG:4326")
+                .iloc[0],
             }
         ],
         geometry="geometry",
@@ -231,13 +241,17 @@ def export_pair_routes_to_qgis(
     for res in h3_resolutions:
         pkl_path = pair_dir / f"h3_drive_res{int(res)}.pkl"
         if not pkl_path.exists():
-            h3_summary.append({"h3_res": int(res), "status": "missing_pkl", "path": str(pkl_path)})
+            h3_summary.append(
+                {"h3_res": int(res), "status": "missing_pkl", "path": str(pkl_path)}
+            )
             continue
 
         with pkl_path.open("rb") as f:
             H = pickle.load(f)
         if not isinstance(H, nx.Graph):
-            h3_summary.append({"h3_res": int(res), "status": "bad_pickle_type", "path": str(pkl_path)})
+            h3_summary.append(
+                {"h3_res": int(res), "status": "bad_pickle_type", "path": str(pkl_path)}
+            )
             continue
 
         oc = h3.latlng_to_cell(float(origin.y), float(origin.x), int(res))
@@ -245,15 +259,24 @@ def export_pair_routes_to_qgis(
         os_cell = hnetx.snap_cell_to_graph(oc, set(H.nodes), max_k=int(snap_k))
         ds_cell = hnetx.snap_cell_to_graph(dc, set(H.nodes), max_k=int(snap_k))
         if os_cell is None or ds_cell is None:
-            h3_summary.append({"h3_res": int(res), "status": "snap_failed", "path": str(pkl_path)})
+            h3_summary.append(
+                {"h3_res": int(res), "status": "snap_failed", "path": str(pkl_path)}
+            )
             continue
 
-        path_cells = nx.shortest_path(H, source=os_cell, target=ds_cell, weight=weight_attr)
+        path_cells = nx.shortest_path(
+            H, source=os_cell, target=ds_cell, weight=weight_attr
+        )
         travel_time_sec = float(
-            nx.shortest_path_length(H, source=os_cell, target=ds_cell, weight=weight_attr)
+            nx.shortest_path_length(
+                H, source=os_cell, target=ds_cell, weight=weight_attr
+            )
         )
         travel_miles = float(
-            sum(float(H[a][b].get("centroid_dist_miles", 0.0)) for a, b in zip(path_cells[:-1], path_cells[1:]))
+            sum(
+                float(H[a][b].get("centroid_dist_miles", 0.0))
+                for a, b in zip(path_cells[:-1], path_cells[1:])
+            )
         )
 
         route_line = hnetx.h3_path_to_linestring(path_cells)
@@ -320,9 +343,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Directory containing pair manifest and h3_drive_res*.pkl files.",
     )
     p.add_argument("--out-gpkg", required=True, help="Output GeoPackage path.")
-    p.add_argument("--resolutions", default="8", help="Comma-separated H3 resolutions to export.")
-    p.add_argument("--weight-attr", default="travel_time", help="Edge weight attribute for shortest path.")
-    p.add_argument("--snap-k", type=int, default=10, help="Max k-ring snap distance for H3 cells.")
+    p.add_argument(
+        "--resolutions", default="8", help="Comma-separated H3 resolutions to export."
+    )
+    p.add_argument(
+        "--weight-attr",
+        default="travel_time",
+        help="Edge weight attribute for shortest path.",
+    )
+    p.add_argument(
+        "--snap-k", type=int, default=10, help="Max k-ring snap distance for H3 cells."
+    )
     return p
 
 

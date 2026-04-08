@@ -230,9 +230,13 @@ def build_points_search_polygon(
     side = max(maxx - minx, maxy - miny, float(min_square_side_m))
     cx = (minx + maxx) / 2.0
     cy = (miny + maxy) / 2.0
-    square_proj = box(cx - side / 2.0, cy - side / 2.0, cx + side / 2.0, cy + side / 2.0)
+    square_proj = box(
+        cx - side / 2.0, cy - side / 2.0, cx + side / 2.0, cy + side / 2.0
+    )
     buffered_proj = square_proj.buffer(onetx.miles_to_meters(buffer_miles))
-    return gpd.GeoSeries([buffered_proj], crs=proj_crs).to_crs(DEFAULT_POINT_CRS).iloc[0]
+    return (
+        gpd.GeoSeries([buffered_proj], crs=proj_crs).to_crs(DEFAULT_POINT_CRS).iloc[0]
+    )
 
 
 def build_calibrated_h3_graph_for_points(
@@ -262,9 +266,15 @@ def build_calibrated_h3_graph_for_points(
         calibration_profile_name,
         overrides=calibration_profile_overrides,
     )
-    resolved_h3_res = int(h3_res if h3_res is not None else calx.get_default_h3_res(profile))
-    resolved_weight_attr = str(weight_attr or calx.get_default_query_weight_attr(profile))
-    resolved_report_weight_attr = str(report_weight_attr or calx.get_default_report_weight_attr(profile))
+    resolved_h3_res = int(
+        h3_res if h3_res is not None else calx.get_default_h3_res(profile)
+    )
+    resolved_weight_attr = str(
+        weight_attr or calx.get_default_query_weight_attr(profile)
+    )
+    resolved_report_weight_attr = str(
+        report_weight_attr or calx.get_default_report_weight_attr(profile)
+    )
 
     if h3_graph is None:
         if search_polygon_wgs84 is None:
@@ -382,8 +392,18 @@ def run_batch_od_routes(
         points_gdf = gpd.GeoDataFrame(
             pd.concat(
                 [
-                    gpd.GeoDataFrame(group_frame.copy(), geometry="origin_geom", crs=DEFAULT_POINT_CRS)[["origin_geom"]].rename(columns={"origin_geom": "geometry"}),
-                    gpd.GeoDataFrame(group_frame.copy(), geometry="destination_geom", crs=DEFAULT_POINT_CRS)[["destination_geom"]].rename(columns={"destination_geom": "geometry"}),
+                    gpd.GeoDataFrame(
+                        group_frame.copy(),
+                        geometry="origin_geom",
+                        crs=DEFAULT_POINT_CRS,
+                    )[["origin_geom"]].rename(columns={"origin_geom": "geometry"}),
+                    gpd.GeoDataFrame(
+                        group_frame.copy(),
+                        geometry="destination_geom",
+                        crs=DEFAULT_POINT_CRS,
+                    )[["destination_geom"]].rename(
+                        columns={"destination_geom": "geometry"}
+                    ),
                 ],
                 ignore_index=True,
             ),
@@ -458,22 +478,37 @@ def run_batch_od_routes(
                 "destination_h3_cell": route_result.get("destination_cell"),
                 "origin_h3_cell_graph": route_result.get("origin_cell_graph"),
                 "destination_h3_cell_graph": route_result.get("destination_cell_graph"),
-                "h3_path": "|".join(route_result["path_cells"]) if route_result.get("path_cells") else None,
-                "h3_path_n_cells": len(route_result["path_cells"]) if route_result.get("path_cells") else 0,
+                "h3_path": (
+                    "|".join(route_result["path_cells"])
+                    if route_result.get("path_cells")
+                    else None
+                ),
+                "h3_path_n_cells": (
+                    len(route_result["path_cells"])
+                    if route_result.get("path_cells")
+                    else 0
+                ),
                 "h3_travel_time": route_result.get("travel_time_sec"),
-                "h3_travel_time_postcalibrated": route_result.get("travel_time_postcalibrated_sec"),
+                "h3_travel_time_postcalibrated": route_result.get(
+                    "travel_time_postcalibrated_sec"
+                ),
                 "h3_travel_miles": route_result.get("travel_miles"),
             }
             result_rows.append(out_row)
 
-            if route_result.get("path_cells") and route_result.get("geometry") is not None:
+            if (
+                route_result.get("path_cells")
+                and route_result.get("geometry") is not None
+            ):
                 route_rows.append(
                     {
                         resolved_pair_id_col: row[resolved_pair_id_col],
                         "graph_group_id": graph_group_id,
                         "status": route_result["status"],
                         "h3_travel_time": route_result.get("travel_time_sec"),
-                        "h3_travel_time_postcalibrated": route_result.get("travel_time_postcalibrated_sec"),
+                        "h3_travel_time_postcalibrated": route_result.get(
+                            "travel_time_postcalibrated_sec"
+                        ),
                         "h3_travel_miles": route_result.get("travel_miles"),
                         "n_cells": len(route_result["path_cells"]),
                         "geometry": route_result["geometry"],
@@ -566,7 +601,9 @@ def run_batch_nearest_target_assignment(
             continue
 
         combined_points = gpd.GeoDataFrame(
-            pd.concat([src_group[["geometry"]], tgt_group[["geometry"]]], ignore_index=True),
+            pd.concat(
+                [src_group[["geometry"]], tgt_group[["geometry"]]], ignore_index=True
+            ),
             geometry="geometry",
             crs=DEFAULT_POINT_CRS,
         )
@@ -698,7 +735,9 @@ def run_batch_drivesheds(
         input_crs=input_crs,
         target_crs=DEFAULT_POINT_CRS,
     )
-    origin_gdf, resolved_origin_id_col = _ensure_id_column(origin_gdf, origin_id_col, "origin")
+    origin_gdf, resolved_origin_id_col = _ensure_id_column(
+        origin_gdf, origin_id_col, "origin"
+    )
     total_origins = int(len(origin_gdf))
     batch_started = perf_counter()
     _log(
@@ -827,9 +866,21 @@ def run_batch_drivesheds(
             "origin_h3_cell": result.origin_h3_cell,
             "origin_h3_cell_graph": result.origin_h3_cell_graph,
         }
-        polygon_rows.append(_stamp_batch_metadata(result.driveshed_gdf, base_row=dict(row), extra_attrs=shared_attrs))
-        cell_rows.append(_stamp_batch_metadata(result.reachable_cells_gdf, base_row=dict(row), extra_attrs=shared_attrs))
-        edge_rows.append(_stamp_batch_metadata(result.reachable_edges_gdf, base_row=dict(row), extra_attrs=shared_attrs))
+        polygon_rows.append(
+            _stamp_batch_metadata(
+                result.driveshed_gdf, base_row=dict(row), extra_attrs=shared_attrs
+            )
+        )
+        cell_rows.append(
+            _stamp_batch_metadata(
+                result.reachable_cells_gdf, base_row=dict(row), extra_attrs=shared_attrs
+            )
+        )
+        edge_rows.append(
+            _stamp_batch_metadata(
+                result.reachable_edges_gdf, base_row=dict(row), extra_attrs=shared_attrs
+            )
+        )
 
     origins_out = _concat_gdfs(origin_rows)
     search_out = _concat_gdfs(search_rows)
@@ -837,8 +888,12 @@ def run_batch_drivesheds(
     cells_out = _concat_gdfs(cell_rows)
     edges_out = _concat_gdfs(edge_rows)
 
-    upsampled_cells_out = gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=DEFAULT_POINT_CRS)
-    upsampled_polygons_out = gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=DEFAULT_POINT_CRS)
+    upsampled_cells_out = gpd.GeoDataFrame(
+        columns=["geometry"], geometry="geometry", crs=DEFAULT_POINT_CRS
+    )
+    upsampled_polygons_out = gpd.GeoDataFrame(
+        columns=["geometry"], geometry="geometry", crs=DEFAULT_POINT_CRS
+    )
     if upsampled_target_resolutions and not cells_out.empty:
         upsample_started = perf_counter()
         _log(
@@ -898,7 +953,9 @@ def _ensure_point_geometry_series(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         if geom is None or not isinstance(geom, Point) or geom.is_empty:
             bad_rows.append(idx)
     if bad_rows:
-        raise ValueError(f"All geometries must be non-empty Point geometries. Bad row positions: {bad_rows[:10]}")
+        raise ValueError(
+            f"All geometries must be non-empty Point geometries. Bad row positions: {bad_rows[:10]}"
+        )
     return out
 
 
@@ -914,7 +971,11 @@ def _resolve_point_series(
     allow_active_geometry: bool,
 ) -> pd.Series:
     if geometry_col and geometry_col in frame.columns:
-        temp = gpd.GeoDataFrame(frame.copy(), geometry=frame[geometry_col].apply(_coerce_point_value), crs=input_crs)
+        temp = gpd.GeoDataFrame(
+            frame.copy(),
+            geometry=frame[geometry_col].apply(_coerce_point_value),
+            crs=input_crs,
+        )
         if str(temp.crs).lower() != str(target_crs).lower():
             temp = temp.to_crs(target_crs)
         return temp.geometry.reset_index(drop=True)
@@ -1019,12 +1080,20 @@ def _solve_h3_route(
     report_weight_attr: str,
     snap_max_k: int,
 ) -> Dict[str, Any]:
-    origin_cell = h3.latlng_to_cell(float(origin_wgs84.y), float(origin_wgs84.x), h3_res)
-    destination_cell = h3.latlng_to_cell(float(destination_wgs84.y), float(destination_wgs84.x), h3_res)
+    origin_cell = h3.latlng_to_cell(
+        float(origin_wgs84.y), float(origin_wgs84.x), h3_res
+    )
+    destination_cell = h3.latlng_to_cell(
+        float(destination_wgs84.y), float(destination_wgs84.x), h3_res
+    )
     graph_nodes: set[str] = set(h3_graph.nodes)
 
-    origin_cell_graph = hnetx.snap_cell_to_graph(origin_cell, graph_nodes, max_k=snap_max_k)
-    destination_cell_graph = hnetx.snap_cell_to_graph(destination_cell, graph_nodes, max_k=snap_max_k)
+    origin_cell_graph = hnetx.snap_cell_to_graph(
+        origin_cell, graph_nodes, max_k=snap_max_k
+    )
+    destination_cell_graph = hnetx.snap_cell_to_graph(
+        destination_cell, graph_nodes, max_k=snap_max_k
+    )
     if origin_cell_graph is None or destination_cell_graph is None:
         return {
             "status": "snap_failed",
@@ -1177,12 +1246,20 @@ def _rows_to_gdf(
     geometry_col: str,
 ) -> gpd.GeoDataFrame:
     if not rows:
-        return gpd.GeoDataFrame(columns=[geometry_col], geometry=geometry_col, crs=DEFAULT_POINT_CRS)
+        return gpd.GeoDataFrame(
+            columns=[geometry_col], geometry=geometry_col, crs=DEFAULT_POINT_CRS
+        )
     return gpd.GeoDataFrame(list(rows), geometry=geometry_col, crs=DEFAULT_POINT_CRS)
 
 
 def _concat_gdfs(frames: Sequence[gpd.GeoDataFrame]) -> gpd.GeoDataFrame:
     non_empty = [frame for frame in frames if frame is not None and not frame.empty]
     if not non_empty:
-        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=DEFAULT_POINT_CRS)
-    return gpd.GeoDataFrame(pd.concat(non_empty, ignore_index=True), geometry="geometry", crs=DEFAULT_POINT_CRS)
+        return gpd.GeoDataFrame(
+            columns=["geometry"], geometry="geometry", crs=DEFAULT_POINT_CRS
+        )
+    return gpd.GeoDataFrame(
+        pd.concat(non_empty, ignore_index=True),
+        geometry="geometry",
+        crs=DEFAULT_POINT_CRS,
+    )

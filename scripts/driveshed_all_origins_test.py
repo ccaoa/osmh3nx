@@ -159,7 +159,9 @@ if __name__ == "__main__":
     vintage = 0
     output_dir = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
     csv_file = str(repo_root() / "osm_scale_calibration.csv")
-    output_gpkg = os.path.join(output_dir, f"h3_driveshed_all_origins_vintage{vintage}.gpkg")
+    output_gpkg = os.path.join(
+        output_dir, f"h3_driveshed_all_origins_vintage{vintage}.gpkg"
+    )
 
     cfg = AllOriginsDriveshedConfig()
     _log("All-origins driveshed test starting")
