@@ -7,7 +7,11 @@ Hexagonal [H3](https://h3geo.org/) routing, drivesheds, and scalable network ana
 [![Python versions](https://img.shields.io/badge/python-3.11%20%7C%203.12-E6BD29.svg)](https://www.python.org/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://black.readthedocs.io/)
 
-*project description*
+`osmh3nx` is a Python package for building reusable H3-based transportation networks from
+OpenStreetMap drive graphs, then using those networks for routing, nearest-target assignment,
+drivesheds, and dataframe-oriented batch analysis. The project is designed for users who want a
+scalable hex-based abstraction over OSM routing rather than using raw street-network nodes as the
+main analysis surface.
 
 Inspired by 
 
