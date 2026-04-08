@@ -7,6 +7,8 @@ name = "osmh3nx"
 version = "0.1.0"
 description = "Hexagonal H3 routing, drivesheds, and scalable network analysis with OpenStreetMap networks."
 readme = "README.md"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [
     { name = "Alex Cooper" },
@@ -25,6 +27,7 @@ keywords = [
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Topic :: Scientific/Engineering :: GIS",
