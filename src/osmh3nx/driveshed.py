@@ -17,7 +17,6 @@ from . import calibrate as calx
 from . import network_h3
 from . import network_osm
 
-
 SECONDS_PER_MINUTE: float = 60.0
 DEFAULT_CALIBRATION_PROFILE_NAME: str = calx.DEFAULT_PROFILE_NAME
 DEFAULT_CALIBRATION_PROFILE = calx.get_calibration_profile(
