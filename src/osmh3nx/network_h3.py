@@ -129,7 +129,7 @@ def download_osm_graph_drive(polygon_wgs84: Polygon) -> nx.MultiDiGraph:
 
 
 def _ring_lnglat_to_latlng(
-    ring_lnglat: Sequence[Tuple[float, float]]
+    ring_lnglat: Sequence[Tuple[float, float]],
 ) -> List[Tuple[float, float]]:
     """
     Convert a Shapely ring coordinate sequence from (lng, lat) to (lat, lng),
