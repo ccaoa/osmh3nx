@@ -28,7 +28,7 @@ DEFAULT_H3_WEIGHT_ATTR: str = calx.get_default_query_weight_attr(
 )
 DEFAULT_OSM_CACHE_DIR: str = network_osm.DEFAULT_CACHE_DIR
 DEFAULT_SEARCH_BUFFER_FACTOR: float = (
-    62.13711922373339  # 100 KM # 24.854847689493358*2  # 80 KM
+    3.1068559611866697  # Approximately 100 km for the default 20-minute, 60 mph batch setting.
 )
 UPSAMPLE_META_COLUMNS: Tuple[str, ...] = (
     "pair_id",
