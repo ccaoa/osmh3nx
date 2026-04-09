@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "osmh3nx"
+version = "0.1.0"
+description = "Hexagonal H3 routing, drivesheds, and scalable network analysis with OpenStreetMap networks."
+readme = "README.md"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [
+    { name = "Alex Cooper" },
+    { email = "jacooper1317@gmail.com" }
+]
+keywords = [
+    "h3",
+    "openstreetmap",
+    "osmnx",
+    "routing",
+    "driveshed",
+    "geospatial",
+    "network-analysis",
+    "GIS",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: GIS",
+]
+dependencies = [
+    "geopandas",
+    "h3",
+    "networkx",
+    "numpy",
+    "osmnx",
+    "pandas",
+    "platformdirs",
+    "pyproj",
+    "shapely>=2.0",
+    "scikit-learn",
+]
+
+[project.urls]
+Homepage = "https://github.com/ccaoa/osmh3nx"
+Repository = "https://github.com/ccaoa/osmh3nx"
+Issues = "https://github.com/ccaoa/osmh3nx/issues"
+
+[project.optional-dependencies]
+development = [
+    "black",
+    "pip-tools",
+]
+typecheck = [
+    "pandas-stubs",
+    "types-geopandas",
+    "types-networkx",
+    "types-shapely",
+]
+
+[project.scripts]
+osmh3nx-driveshed = "osmh3nx.cli.driveshed:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
