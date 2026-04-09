@@ -1,0 +1,157 @@
+name: Release Management
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Existing semantic version tag to turn into a GitHub Release, for example v0.1.0.
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-management-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  manage-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve release tag and title
+        id: resolve
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tag_name="${{ github.ref_name }}"
+          else
+            tag_name="${{ inputs.tag_name }}"
+          fi
+
+          if [[ ! "$tag_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z]+)?$ ]]; then
+            echo "Tag name must look like v1.2.3 or v1.2.3-rc.1."
+            exit 1
+          fi
+
+          version="${tag_name#v}"
+          if [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)([-+].*)?$ ]]; then
+            patch_segment="${BASH_REMATCH[3]}"
+          else
+            echo "Unable to parse semantic version from $tag_name."
+            exit 1
+          fi
+
+          if [ "$patch_segment" = "0" ]; then
+            suffix=" Release"
+          else
+            suffix=" Hotfix"
+          fi
+
+          echo "tag_name=$tag_name" >> "$GITHUB_OUTPUT"
+          echo "release_name=${tag_name}${suffix}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out tagged revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.tag_name }}
+          fetch-depth: 0
+
+      - name: Verify release tag exists
+        shell: bash
+        run: |
+          git fetch --tags --force
+          git rev-parse "refs/tags/${{ steps.resolve.outputs.tag_name }}" >/dev/null 2>&1 || {
+            echo "Tag ${{ steps.resolve.outputs.tag_name }} does not exist in this repository."
+            exit 1
+          }
+
+      - name: Extract release notes from CHANGELOG.md
+        env:
+          TAG_NAME: ${{ steps.resolve.outputs.tag_name }}
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          import os
+          import pathlib
+          import re
+
+          changelog_path = pathlib.Path("CHANGELOG.md")
+          tag_name = os.environ["TAG_NAME"]
+          version = tag_name.removeprefix("v")
+          release_notes_path = pathlib.Path("release_notes.md")
+          fallback_message = (
+              f"No matching CHANGELOG.md section was found for {tag_name}.\n"
+              f"Update CHANGELOG.md and re-run this workflow if you want richer release notes.\n"
+          )
+
+          if not changelog_path.exists():
+              release_notes_path.write_text(fallback_message, encoding="utf-8")
+              raise SystemExit(0)
+
+          text = changelog_path.read_text(encoding="utf-8")
+          if not text.strip():
+              release_notes_path.write_text(fallback_message, encoding="utf-8")
+              raise SystemExit(0)
+
+          lines = text.splitlines()
+          heading_patterns = [
+              re.compile(rf"^(#+)\s+\[?{re.escape(tag_name)}\]?(?:\s*[-:].*)?$"),
+              re.compile(rf"^(#+)\s+\[?{re.escape(version)}\]?(?:\s*[-:].*)?$"),
+          ]
+
+          start_index: int | None = None
+          heading_level: int | None = None
+
+          for index, line in enumerate(lines):
+              stripped = line.strip()
+              for pattern in heading_patterns:
+                  match = pattern.match(stripped)
+                  if match:
+                      start_index = index
+                      heading_level = len(match.group(1))
+                      break
+              if start_index is not None:
+                  break
+
+          if start_index is None or heading_level is None:
+              release_notes_path.write_text(fallback_message, encoding="utf-8")
+              raise SystemExit(0)
+
+          body_lines: list[str] = []
+          for line in lines[start_index + 1 :]:
+              stripped = line.strip()
+              next_heading = re.match(r"^(#{1,6})\s+", stripped)
+              if next_heading and len(next_heading.group(1)) <= heading_level:
+                  break
+              body_lines.append(line)
+
+          body = "\n".join(body_lines).strip()
+          if not body:
+              body = fallback_message.strip()
+
+          release_notes_path.write_text(body + "\n", encoding="utf-8")
+          PY
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ steps.resolve.outputs.tag_name }}
+          RELEASE_NAME: ${{ steps.resolve.outputs.release_name }}
+        shell: bash
+        run: |
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release edit "$TAG_NAME" \
+              --title "$RELEASE_NAME" \
+              --notes-file release_notes.md
+          else
+            gh release create "$TAG_NAME" \
+              --title "$RELEASE_NAME" \
+              --notes-file release_notes.md \
+              --verify-tag
+          fi

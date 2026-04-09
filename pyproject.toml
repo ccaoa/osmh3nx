@@ -45,6 +45,11 @@ dependencies = [
     "scikit-learn",
 ]
 
+[project.urls]
+Homepage = "https://github.com/ccaoa/osmh3nx"
+Repository = "https://github.com/ccaoa/osmh3nx"
+Issues = "https://github.com/ccaoa/osmh3nx/issues"
+
 [project.optional-dependencies]
 development = [
     "black",

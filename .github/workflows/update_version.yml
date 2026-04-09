@@ -7,18 +7,19 @@ on:
       - 'dev/**'
       - staging
       - main
+  workflow_dispatch:
 
 jobs:
   update-version:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '>=3.11'
+          python-version: "3.12"
 
       - name: Set Local Time Zone to Eastern Time
         run: |
@@ -27,19 +28,18 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install toml
 
       - name: Read version from pyproject.toml
         id: read_version
         run: |
-          version=$(python -c "import toml; data=toml.load('pyproject.toml'); print(data.get('version', data.get('project', {}).get('version', '')))") 
+          version=$(python -c "import pathlib, tomllib; data=tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8')); print(data.get('project', {}).get('version', data.get('version', '')))")
           echo "version=$version" >> $GITHUB_ENV
           echo "version=$version" >> $GITHUB_OUTPUT
 
-      - name: Update ccaoa/__version__.py
+      - name: Update src/osmh3nx/__version__.py
         run: |
           # Use the version from GITHUB_ENV
-          echo "__version__ = \"${version}\"" > ccaoa/__version__.py
+          echo "__version__ = \"${version}\"" > src/osmh3nx/__version__.py
 
       - name: Prepare version for badge
         id: prep_badge
@@ -66,7 +66,7 @@ jobs:
             sed -i "s/\(version-\)[0-9]\+\.[0-9]\+\(\.[0-9]\+\)\?\(--[a-zA-Z0-9\.]\+\)\?/\1$version_formatted_for_badge/" README.md
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add ccaoa/__version__.py README.md
+            git add src/osmh3nx/__version__.py README.md
             git commit -m "Update version to ${{ env.version }} on ${{ github.ref_name }} branch"
             git push
           else
