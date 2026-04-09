@@ -12,6 +12,7 @@ from .batch import (
     BatchODRouteResult,
     H3BatchGraphContext,
     build_calibrated_h3_graph_for_points,
+    build_points_convex_hull_search_polygon,
     build_points_search_polygon,
     ensure_point_gdf,
     prepare_od_dataframe,
@@ -26,6 +27,7 @@ from .driveshed import (
     build_h3_driveshed_from_point,
     write_driveshed_result_to_gpkg,
 )
+from .spatial import create_buffered_convex_hull, create_convex_hull
 
 __all__ = [
     "DEFAULT_H3_RES",
@@ -39,8 +41,11 @@ __all__ = [
     "H3BatchGraphContext",
     "build_calibrated_h3_graph_from_osm",
     "build_calibrated_h3_graph_for_points",
+    "build_points_convex_hull_search_polygon",
     "build_points_search_polygon",
     "build_h3_driveshed_from_point",
+    "create_buffered_convex_hull",
+    "create_convex_hull",
     "ensure_point_gdf",
     "get_calibration_profile",
     "prepare_od_dataframe",

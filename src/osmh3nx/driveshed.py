@@ -30,6 +30,14 @@ DEFAULT_OSM_CACHE_DIR: str = network_osm.DEFAULT_CACHE_DIR
 DEFAULT_SEARCH_BUFFER_FACTOR: float = (
     3.1068559611866697  # Approximately 100 km for the default 20-minute, 60 mph batch setting.
 )
+DEFAULT_SHARED_GRAPH_BUFFER_MINUTES: float = 20.0
+DEFAULT_SHARED_GRAPH_BUFFER_SPEED_MPH: float = 60.0
+DEFAULT_SHARED_GRAPH_BUFFER_MILES: float = (
+    DEFAULT_SHARED_GRAPH_BUFFER_MINUTES
+    / SECONDS_PER_MINUTE
+    * DEFAULT_SHARED_GRAPH_BUFFER_SPEED_MPH
+    * DEFAULT_SEARCH_BUFFER_FACTOR
+)
 UPSAMPLE_META_COLUMNS: Tuple[str, ...] = (
     "pair_id",
     "count",
@@ -119,8 +127,8 @@ def estimate_driveshed_buffer_miles(
         raise ValueError("buffer_speed_mph must be > 0.")
     if buffer_factor < 1.0:
         raise ValueError("buffer_factor must be >= 1.0.")
-    if min_buffer_miles <= 0:
-        raise ValueError("min_buffer_miles must be > 0.")
+    if min_buffer_miles < 0:
+        raise ValueError("min_buffer_miles must be >= 0.")
 
     travel_hours = float(max_travel_minutes) / SECONDS_PER_MINUTE / 60.0
     estimate = travel_hours * float(buffer_speed_mph) * float(buffer_factor)

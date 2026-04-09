@@ -37,6 +37,9 @@ class AllOriginsDriveshedConfig:
     search_buffer_speed_mph: float = 60.0
     search_buffer_factor: float = dshed.DEFAULT_SEARCH_BUFFER_FACTOR
     search_min_buffer_miles: float = 2.0
+    graph_group_cols: Sequence[str] = ()
+    share_graph_for_all_origins: bool = False
+    shared_graph_buffer_miles: float = dshed.DEFAULT_SHARED_GRAPH_BUFFER_MILES
     snap_max_k: int = 10
     osm_cache_dir: str | None = REPO_CACHE_DIR
     osm_force_refresh: bool = False
@@ -91,7 +94,9 @@ def run_all_origins_driveshed_test(
         "Run configuration "
         f"(profile={config.calibration_profile_name}, weight_attr={config.weight_attr}, "
         f"osm_cache_dir={config.osm_cache_dir}, osm_force_refresh={config.osm_force_refresh}, "
-        f"snap_max_k={config.snap_max_k})"
+        f"snap_max_k={config.snap_max_k}, graph_group_cols={tuple(config.graph_group_cols)}, "
+        f"share_graph_for_all_origins={config.share_graph_for_all_origins}, "
+        f"shared_graph_buffer_miles={config.shared_graph_buffer_miles})"
     )
     _log(
         "Starting batch driveshed build "
@@ -102,6 +107,8 @@ def run_all_origins_driveshed_test(
     result = run_batch_drivesheds(
         origin_inputs,
         origin_id_col="pair_id",
+        graph_group_cols=config.graph_group_cols,
+        share_graph_for_all_origins=config.share_graph_for_all_origins,
         geometry_col="geometry",
         max_travel_minutes=config.max_travel_minutes,
         h3_res=config.h3_res,
@@ -113,6 +120,7 @@ def run_all_origins_driveshed_test(
         search_buffer_speed_mph=config.search_buffer_speed_mph,
         search_buffer_factor=config.search_buffer_factor,
         search_min_buffer_miles=config.search_min_buffer_miles,
+        shared_graph_buffer_miles=config.shared_graph_buffer_miles,
         snap_max_k=config.snap_max_k,
         upsampled_target_resolutions=config.upsampled_target_resolutions,
     )
