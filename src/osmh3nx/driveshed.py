@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import geopandas as gpd
@@ -12,17 +13,23 @@ from shapely.geometry import LineString, Point, Polygon
 
 import h3
 
-import calibrate as calx
-import network_h3
-import network_osm
-
+from . import calibrate as calx
+from . import network_h3
+from . import network_osm
 
 SECONDS_PER_MINUTE: float = 60.0
 DEFAULT_CALIBRATION_PROFILE_NAME: str = calx.DEFAULT_PROFILE_NAME
-DEFAULT_CALIBRATION_PROFILE = calx.get_calibration_profile(DEFAULT_CALIBRATION_PROFILE_NAME)
+DEFAULT_CALIBRATION_PROFILE = calx.get_calibration_profile(
+    DEFAULT_CALIBRATION_PROFILE_NAME
+)
 DEFAULT_H3_RES: int = calx.get_default_h3_res(DEFAULT_CALIBRATION_PROFILE)
-DEFAULT_H3_WEIGHT_ATTR: str = calx.get_default_query_weight_attr(DEFAULT_CALIBRATION_PROFILE)
-DEFAULT_SEARCH_BUFFER_FACTOR: float = 62.13711922373339  # 100 KM # 24.854847689493358*2  # 80 KM
+DEFAULT_H3_WEIGHT_ATTR: str = calx.get_default_query_weight_attr(
+    DEFAULT_CALIBRATION_PROFILE
+)
+DEFAULT_OSM_CACHE_DIR: str = network_osm.DEFAULT_CACHE_DIR
+DEFAULT_SEARCH_BUFFER_FACTOR: float = (
+    62.13711922373339  # 100 KM # 24.854847689493358*2  # 80 KM
+)
 UPSAMPLE_META_COLUMNS: Tuple[str, ...] = (
     "pair_id",
     "count",
@@ -87,7 +94,9 @@ def _ensure_wgs84_point(origin: Any) -> Point:
     if str(crs).lower() in {"epsg:4326", "wgs84"}:
         return geom
 
-    origin_gdf = gpd.GeoDataFrame({"row_id": [0]}, geometry=[geom], crs=crs).to_crs("EPSG:4326")
+    origin_gdf = gpd.GeoDataFrame({"row_id": [0]}, geometry=[geom], crs=crs).to_crs(
+        "EPSG:4326"
+    )
     return origin_gdf.geometry.iloc[0]
 
 
@@ -137,12 +146,16 @@ def build_driveshed_search_polygon(
         min_buffer_miles=min_buffer_miles,
     )
 
-    origin_gdf = gpd.GeoDataFrame({"row_id": [0]}, geometry=[origin_wgs84], crs="EPSG:4326")
+    origin_gdf = gpd.GeoDataFrame(
+        {"row_id": [0]}, geometry=[origin_wgs84], crs="EPSG:4326"
+    )
     proj_crs = origin_gdf.estimate_utm_crs() or "EPSG:3857"
     origin_proj = origin_gdf.to_crs(proj_crs)
     buffer_m = network_osm.miles_to_meters(buffer_miles)
     polygon_proj = origin_proj.geometry.iloc[0].buffer(buffer_m)
-    polygon_wgs84 = gpd.GeoSeries([polygon_proj], crs=proj_crs).to_crs("EPSG:4326").iloc[0]
+    polygon_wgs84 = (
+        gpd.GeoSeries([polygon_proj], crs=proj_crs).to_crs("EPSG:4326").iloc[0]
+    )
     return polygon_wgs84
 
 
@@ -160,6 +173,11 @@ def _build_cell_polygon(cell: str) -> Polygon:
     return Polygon(boundary_lnglat)
 
 
+def _log(message: str) -> None:
+    timestamp = pd.Timestamp.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    print(f"[{timestamp}] {message}", flush=True)
+
+
 def _build_reachable_cells_gdf(
     *,
     distances: Dict[str, float],
@@ -167,7 +185,9 @@ def _build_reachable_cells_gdf(
     origin_cell_graph: str,
 ) -> gpd.GeoDataFrame:
     rows: List[Dict[str, Any]] = []
-    for cell, time_sec in sorted(distances.items(), key=lambda item: (float(item[1]), item[0])):
+    for cell, time_sec in sorted(
+        distances.items(), key=lambda item: (float(item[1]), item[0])
+    ):
         path = paths.get(cell, [])
         rows.append(
             {
@@ -230,11 +250,14 @@ def _build_reachable_edges_gdf(
                 "to_h3_cell": b,
                 "is_directed_graph": bool(h3_graph.is_directed()),
                 "travel_time_sec": float(data.get(weight_attr, 0.0)),
-                "travel_time_minutes": float(data.get(weight_attr, 0.0)) / SECONDS_PER_MINUTE,
+                "travel_time_minutes": float(data.get(weight_attr, 0.0))
+                / SECONDS_PER_MINUTE,
                 "observed_step_time_raw_sec": data.get("observed_step_time_raw_sec"),
                 "step_time_floored_sec": data.get("step_time_floored_sec"),
                 "step_time_route_sec": data.get("step_time_route_sec"),
-                "step_time_postcalibrated_sec": data.get("step_time_postcalibrated_sec"),
+                "step_time_postcalibrated_sec": data.get(
+                    "step_time_postcalibrated_sec"
+                ),
                 "centroid_dist_miles": data.get("centroid_dist_miles"),
                 "floor_applied": data.get("floor_applied"),
                 "geometry": LineString([(lng_a, lat_a), (lng_b, lat_b)]),
@@ -244,7 +267,9 @@ def _build_reachable_edges_gdf(
     return gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
 
 
-def _dissolve_reachable_cells(reachable_cells_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+def _dissolve_reachable_cells(
+    reachable_cells_gdf: gpd.GeoDataFrame,
+) -> gpd.GeoDataFrame:
     if reachable_cells_gdf.empty:
         return gpd.GeoDataFrame(
             {
@@ -283,7 +308,9 @@ def aggregate_driveshed_cells_to_parent_layer(
     Roll reachable driveshed H3 cells up to one coarser parent resolution.
     """
     if reachable_cells_gdf.empty:
-        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
+        return gpd.GeoDataFrame(
+            columns=["geometry"], geometry="geometry", crs="EPSG:4326"
+        )
     if h3_cell_col not in reachable_cells_gdf.columns:
         raise ValueError(f"Column '{h3_cell_col}' not found in reachable_cells_gdf.")
     work = reachable_cells_gdf.copy()
@@ -291,11 +318,17 @@ def aggregate_driveshed_cells_to_parent_layer(
     if "h3_res" in work.columns:
         work["source_h3_res"] = work["h3_res"].astype(int)
     else:
-        work["source_h3_res"] = work[h3_cell_col].map(lambda cell: int(h3.get_resolution(str(cell))))
+        work["source_h3_res"] = work[h3_cell_col].map(
+            lambda cell: int(h3.get_resolution(str(cell)))
+        )
 
     if bool((work["source_h3_res"] < int(target_res)).any()):
-        bad_res = int(work.loc[work["source_h3_res"] < int(target_res), "source_h3_res"].min())
-        raise ValueError(f"target_res={target_res} is finer than source_h3_res={bad_res}.")
+        bad_res = int(
+            work.loc[work["source_h3_res"] < int(target_res), "source_h3_res"].min()
+        )
+        raise ValueError(
+            f"target_res={target_res} is finer than source_h3_res={bad_res}."
+        )
 
     work["parent_h3_cell"] = work[h3_cell_col].map(
         lambda cell: h3.cell_to_parent(str(cell), int(target_res))
@@ -319,7 +352,9 @@ def aggregate_driveshed_cells_to_parent_layer(
         .rename(columns={"parent_h3_cell": "h3_cell"})
     )
     if parent_df.empty:
-        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
+        return gpd.GeoDataFrame(
+            columns=["geometry"], geometry="geometry", crs="EPSG:4326"
+        )
 
     parent_df["h3_res"] = int(target_res)
     parent_df["upsampled_source_h3_res"] = parent_df["source_h3_res"].astype(int)
@@ -346,9 +381,13 @@ def aggregate_driveshed_cells_to_parent_layers(
         frames.append(parent_gdf)
 
     if not frames:
-        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
+        return gpd.GeoDataFrame(
+            columns=["geometry"], geometry="geometry", crs="EPSG:4326"
+        )
 
-    return gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), geometry="geometry", crs="EPSG:4326")
+    return gpd.GeoDataFrame(
+        pd.concat(frames, ignore_index=True), geometry="geometry", crs="EPSG:4326"
+    )
 
 
 def dissolve_upsampled_driveshed_cells(
@@ -361,10 +400,19 @@ def dissolve_upsampled_driveshed_cells(
     Dissolve upsampled parent cells into one driveshed polygon per origin and target resolution.
     """
     if upsampled_cells_gdf.empty:
-        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
+        return gpd.GeoDataFrame(
+            columns=["geometry"], geometry="geometry", crs="EPSG:4326"
+        )
 
-    group_cols = [col for col in UPSAMPLE_META_COLUMNS if col in upsampled_cells_gdf.columns]
-    for col in ("source_h3_res", "h3_res", "upsampled_source_h3_res", "upsampled_target_h3_res"):
+    group_cols = [
+        col for col in UPSAMPLE_META_COLUMNS if col in upsampled_cells_gdf.columns
+    ]
+    for col in (
+        "source_h3_res",
+        "h3_res",
+        "upsampled_source_h3_res",
+        "upsampled_target_h3_res",
+    ):
         if col in upsampled_cells_gdf.columns:
             group_cols.append(col)
 
@@ -375,9 +423,13 @@ def dissolve_upsampled_driveshed_cells(
         if "h3_res" in source_work.columns:
             source_work["source_h3_res"] = source_work["h3_res"].astype(int)
         else:
-            source_work["source_h3_res"] = source_work[h3_cell_col].map(lambda cell: int(h3.get_resolution(str(cell))))
+            source_work["source_h3_res"] = source_work[h3_cell_col].map(
+                lambda cell: int(h3.get_resolution(str(cell)))
+            )
 
-        source_group_cols = [col for col in UPSAMPLE_META_COLUMNS if col in source_work.columns]
+        source_group_cols = [
+            col for col in UPSAMPLE_META_COLUMNS if col in source_work.columns
+        ]
         source_group_cols.append("source_h3_res")
         source_agg_map: Dict[str, tuple[str, str]] = {}
         if "travel_time_sec" in source_work.columns:
@@ -385,7 +437,11 @@ def dissolve_upsampled_driveshed_cells(
         if "travel_time_minutes" in source_work.columns:
             source_agg_map["median_travel_time_min"] = ("travel_time_minutes", "median")
         if source_agg_map:
-            source_summary = source_work.groupby(source_group_cols, dropna=False).agg(**source_agg_map).reset_index()
+            source_summary = (
+                source_work.groupby(source_group_cols, dropna=False)
+                .agg(**source_agg_map)
+                .reset_index()
+            )
             source_median_lookup = {
                 tuple(row[col] for col in source_group_cols): {
                     metric: float(row[metric]) for metric in source_agg_map
@@ -411,7 +467,11 @@ def dissolve_upsampled_driveshed_cells(
         for col in group_cols:
             row[col] = meta[col]
         row["n_cells"] = int(len(grp))
-        row["n_child_cells"] = int(grp["n_child_cells"].fillna(0).astype(int).sum()) if "n_child_cells" in grp.columns else int(len(grp))
+        row["n_child_cells"] = (
+            int(grp["n_child_cells"].fillna(0).astype(int).sum())
+            if "n_child_cells" in grp.columns
+            else int(len(grp))
+        )
         lookup_cols = [col for col in UPSAMPLE_META_COLUMNS if col in grp.columns] + (
             ["source_h3_res"] if "source_h3_res" in grp.columns else []
         )
@@ -437,12 +497,13 @@ def build_h3_driveshed_from_point(
     h3_graph: Optional[nx.Graph] = None,
     G_osm: Optional[nx.MultiDiGraph] = None,
     search_polygon_wgs84: Optional[Polygon] = None,
-    osm_cache_dir: Optional[str] = "cache",
+    osm_cache_dir: Optional[str] = DEFAULT_OSM_CACHE_DIR,
     osm_force_refresh: bool = False,
     search_buffer_speed_mph: float = 60.0,
     search_buffer_factor: float = DEFAULT_SEARCH_BUFFER_FACTOR,
     search_min_buffer_miles: float = 2.0,
     snap_max_k: int = 10,
+    progress_label: Optional[str] = None,
 ) -> DriveshedResult:
     """
     Build an H3 driveshed from a single origin point.
@@ -457,8 +518,12 @@ def build_h3_driveshed_from_point(
         calibration_profile_name,
         overrides=calibration_profile_overrides,
     )
-    resolved_h3_res = int(h3_res if h3_res is not None else calx.get_default_h3_res(profile))
-    resolved_weight_attr = str(weight_attr or calx.get_default_query_weight_attr(profile))
+    resolved_h3_res = int(
+        h3_res if h3_res is not None else calx.get_default_h3_res(profile)
+    )
+    resolved_weight_attr = str(
+        weight_attr or calx.get_default_query_weight_attr(profile)
+    )
 
     if resolved_h3_res < 0:
         raise ValueError("h3_res must be >= 0.")
@@ -467,10 +532,14 @@ def build_h3_driveshed_from_point(
 
     origin_wgs84 = _ensure_wgs84_point(origin)
     cutoff_seconds = float(max_travel_minutes) * SECONDS_PER_MINUTE
+    total_started = perf_counter()
+    label_prefix = f"{progress_label} " if progress_label else ""
 
     if h3_graph is None:
         if G_osm is None:
             if search_polygon_wgs84 is None:
+                search_polygon_started = perf_counter()
+                _log(f"{label_prefix}building driveshed search polygon")
                 search_polygon_wgs84 = build_driveshed_search_polygon(
                     origin_wgs84,
                     max_travel_minutes=max_travel_minutes,
@@ -478,12 +547,25 @@ def build_h3_driveshed_from_point(
                     buffer_factor=search_buffer_factor,
                     min_buffer_miles=search_min_buffer_miles,
                 )
+                _log(
+                    f"{label_prefix}search polygon ready "
+                    f"(elapsed_sec={perf_counter() - search_polygon_started:.1f})"
+                )
+            osm_started = perf_counter()
+            _log(f"{label_prefix}loading OSM drive graph")
             G_osm = network_osm.download_osm_drive_graph_for_polygon(
                 search_polygon_wgs84,
                 cache_dir=osm_cache_dir,
                 force_refresh=osm_force_refresh,
             )
+            _log(
+                f"{label_prefix}OSM drive graph ready "
+                f"(nodes={G_osm.number_of_nodes()}, edges={G_osm.number_of_edges()}, "
+                f"elapsed_sec={perf_counter() - osm_started:.1f})"
+            )
 
+        h3_started = perf_counter()
+        _log(f"{label_prefix}building calibrated H3 graph")
         h3_graph, active_profile = calx.build_calibrated_h3_graph_from_osm(
             G_osm,
             h3_res=resolved_h3_res,
@@ -491,6 +573,11 @@ def build_h3_driveshed_from_point(
             profile_overrides=calibration_profile_overrides,
         )
         profile = active_profile
+        _log(
+            f"{label_prefix}calibrated H3 graph ready "
+            f"(nodes={h3_graph.number_of_nodes()}, edges={h3_graph.number_of_edges()}, "
+            f"elapsed_sec={perf_counter() - h3_started:.1f})"
+        )
     else:
         graph_h3_res = h3_graph.graph.get("h3_res")
         if graph_h3_res is not None and int(graph_h3_res) != int(resolved_h3_res):
@@ -510,12 +597,25 @@ def build_h3_driveshed_from_point(
 
     _validate_weight_attr(h3_graph, resolved_weight_attr)
 
+    snap_started = perf_counter()
+    _log(f"{label_prefix}snapping origin cell to H3 graph")
     graph_nodes = set(h3_graph.nodes)
     origin_cell = h3.latlng_to_cell(origin_wgs84.y, origin_wgs84.x, resolved_h3_res)
-    origin_cell_graph = network_h3.snap_cell_to_graph(origin_cell, graph_nodes, max_k=snap_max_k)
+    origin_cell_graph = network_h3.snap_cell_to_graph(
+        origin_cell, graph_nodes, max_k=snap_max_k
+    )
     if origin_cell_graph is None:
-        raise ValueError("Origin cell could not be snapped to the H3 graph within snap_max_k.")
+        raise ValueError(
+            "Origin cell could not be snapped to the H3 graph within snap_max_k."
+        )
+    _log(
+        f"{label_prefix}origin cell snapped "
+        f"(origin_h3_cell={origin_cell}, origin_h3_cell_graph={origin_cell_graph}, "
+        f"elapsed_sec={perf_counter() - snap_started:.1f})"
+    )
 
+    dijkstra_started = perf_counter()
+    _log(f"{label_prefix}running single-source Dijkstra")
     distances, paths = nx.single_source_dijkstra(
         h3_graph,
         source=origin_cell_graph,
@@ -524,7 +624,13 @@ def build_h3_driveshed_from_point(
     )
     distances = {str(cell): float(time_sec) for cell, time_sec in distances.items()}
     paths = {str(cell): [str(step) for step in path] for cell, path in paths.items()}
+    _log(
+        f"{label_prefix}Dijkstra finished "
+        f"(reachable_nodes={len(distances)}, elapsed_sec={perf_counter() - dijkstra_started:.1f})"
+    )
 
+    output_started = perf_counter()
+    _log(f"{label_prefix}building driveshed output layers")
     reachable_cells_gdf = _build_reachable_cells_gdf(
         distances=distances,
         paths=paths,
@@ -537,6 +643,12 @@ def build_h3_driveshed_from_point(
         weight_attr=resolved_weight_attr,
     )
     driveshed_gdf = _dissolve_reachable_cells(reachable_cells_gdf)
+    _log(
+        f"{label_prefix}driveshed output layers ready "
+        f"(cells={len(reachable_cells_gdf)}, edges={len(reachable_edges_gdf)}, "
+        f"elapsed_sec={perf_counter() - output_started:.1f}, "
+        f"elapsed_total_sec={perf_counter() - total_started:.1f})"
+    )
 
     return DriveshedResult(
         origin_point_wgs84=origin_wgs84,
@@ -580,9 +692,15 @@ def write_driveshed_result_to_gpkg(
         crs="EPSG:4326",
     )
     origin_gdf.to_file(output_path, layer=f"{layer_prefix}_origin", driver="GPKG")
-    result.reachable_cells_gdf.to_file(output_path, layer=f"{layer_prefix}_cells", driver="GPKG")
-    result.reachable_edges_gdf.to_file(output_path, layer=f"{layer_prefix}_edges", driver="GPKG")
-    result.driveshed_gdf.to_file(output_path, layer=f"{layer_prefix}_polygon", driver="GPKG")
+    result.reachable_cells_gdf.to_file(
+        output_path, layer=f"{layer_prefix}_cells", driver="GPKG"
+    )
+    result.reachable_edges_gdf.to_file(
+        output_path, layer=f"{layer_prefix}_edges", driver="GPKG"
+    )
+    result.driveshed_gdf.to_file(
+        output_path, layer=f"{layer_prefix}_polygon", driver="GPKG"
+    )
 
     if result.search_polygon_wgs84 is not None:
         search_gdf = gpd.GeoDataFrame(
@@ -590,16 +708,29 @@ def write_driveshed_result_to_gpkg(
             geometry=[result.search_polygon_wgs84],
             crs="EPSG:4326",
         )
-        search_gdf.to_file(output_path, layer=f"{layer_prefix}_search_polygon", driver="GPKG")
+        search_gdf.to_file(
+            output_path, layer=f"{layer_prefix}_search_polygon", driver="GPKG"
+        )
 
     return output_path
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Build an H3 driveshed from a single origin point.")
-    parser.add_argument("--lon", type=float, required=True, help="Origin longitude in WGS84.")
-    parser.add_argument("--lat", type=float, required=True, help="Origin latitude in WGS84.")
-    parser.add_argument("--h3-res", type=int, default=DEFAULT_H3_RES, help=f"H3 resolution. Default: {DEFAULT_H3_RES}.")
+    parser = argparse.ArgumentParser(
+        description="Build an H3 driveshed from a single origin point."
+    )
+    parser.add_argument(
+        "--lon", type=float, required=True, help="Origin longitude in WGS84."
+    )
+    parser.add_argument(
+        "--lat", type=float, required=True, help="Origin latitude in WGS84."
+    )
+    parser.add_argument(
+        "--h3-res",
+        type=int,
+        default=DEFAULT_H3_RES,
+        help=f"H3 resolution. Default: {DEFAULT_H3_RES}.",
+    )
     parser.add_argument(
         "--calibration-profile",
         type=str,

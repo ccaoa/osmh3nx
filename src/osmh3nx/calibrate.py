@@ -5,10 +5,7 @@ from typing import Any, Dict, Mapping, Optional
 
 import networkx as nx
 
-try:
-    from . import network_h3 as hnetx
-except ImportError:
-    import network_h3 as hnetx
+from . import network_h3 as hnetx
 
 
 @dataclass(frozen=True)
@@ -61,9 +58,7 @@ PROFILE_REGISTRY: Dict[str, CalibrationProfile] = {
     ),
     "rez9_default": CalibrationProfile(
         name="rez9_default",
-        description=(
-            "Rez 9 variant of the current default calibrated timing profile."
-        ),
+        description=("Rez 9 variant of the current default calibrated timing profile."),
         default_h3_res=9,
     ),
 }

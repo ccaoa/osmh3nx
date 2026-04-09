@@ -1,0 +1,70 @@
+# “Any color..., as long as it's black. - Henry Ford”
+name: Black Code Formatter
+
+# Run the workflow whenever there's a push to 'staging' or 'main'
+on:
+  push:
+    branches:
+      - staging
+      - main
+  # on: pull_request workflows are useful for tasks that don't require committing or pushing changes.
+
+jobs:
+  format:
+    name: Format Code with Black
+    runs-on: ubuntu-latest
+
+    steps:
+      # Check out the repository
+      - name: Check out the repository
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.ref_name }}
+
+      # Set up Python environment
+      - name: Set up Python
+        uses: actions/setup-python@v3
+        with:
+          python-version: '>=3.11'
+
+      - name: Set Local Time Zone to Eastern Time
+        run: |
+          sudo timedatectl set-timezone America/New_York
+
+      # Install Black
+      - name: Install Black
+        run: pip install black
+
+      # Run Black
+      - name: Run Black formatter
+        run: black . --fast
+
+      # Conditionally apply the action based on branch protection rules.
+      #  https://github.com/ccaoa/ccaoa-mapping/issues/85
+      # Attempt to commit and push changes.
+      - name: Commit changes
+        id: commit
+        continue-on-error: true  # allow subsequent steps to run even if this fails
+        run: |
+          export TZ=America/New_York
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          # Only commit if there are changes
+          git diff --exit-code || (
+            git add .
+            git commit -m "Apply Black formatting automatically to ${{ github.ref_name }} branch"
+            git push
+          )
+
+      # If the commit step fails on a protected branch, create a pull request.
+      - name: Create Pull Request for protected branches if commit failed
+#        if: ${{ steps.commit.outcome == 'failure' && (github.ref == 'refs/heads/staging' || github.ref == 'refs/heads/main') }}
+        if: ${{ steps.commit.outcome == 'failure' }}
+        uses: peter-evans/create-pull-request@v6.0.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "Apply Black formatting automatically to ${{ github.ref_name }}"
+          title: "(Auto) Apply Black formatting to ${{ github.ref_name }}"
+          branch: auto/black-fix
+          labels: management
+          body: "Apply Black python syntax formatting to package code in the `${{ github.ref_name }}` branch. Automated changes by [create-pull-request](https://github.com/peter-evans/create-pull-request) GitHub action."

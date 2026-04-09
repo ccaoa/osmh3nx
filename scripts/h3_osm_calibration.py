@@ -10,20 +10,24 @@ import h3
 import networkx as nx
 import osmnx as ox
 import pandas as pd
-from shapely import wkt
 from shapely.geometry import LineString, Point, Polygon
 from shapely.ops import unary_union
 
 try:
-    from . import calibrate as calx
-    from . import h3_hierarchy as hhier
-    from . import network_h3 as hnetx
-    from . import network_osm as onetx
+    from _bootstrap import ensure_src_on_path, repo_root
 except ImportError:
-    import calibrate as calx
-    import h3_hierarchy as hhier
-    import network_h3 as hnetx
-    import network_osm as onetx
+    from scripts._bootstrap import ensure_src_on_path, repo_root
+
+ensure_src_on_path()
+
+from osmh3nx import calibrate as calx
+from osmh3nx import h3_hierarchy as hhier
+from osmh3nx import network_h3 as hnetx
+from osmh3nx import network_osm as onetx
+from osmh3nx.data import build_od_points_gdf, load_od_pairs
+from osmh3nx.io import write_layers_to_gpkg
+
+REPO_CACHE_DIR: str = str(repo_root() / "cache")
 
 
 @dataclass(frozen=True)
@@ -37,63 +41,8 @@ class CalibrationConfig:
     report_weight_attr: Optional[str] = None
     shape_corridor_meters: float = 100.0
     snap_k: int = 10
-    osm_cache_dir: Optional[str] = "cache"
+    osm_cache_dir: Optional[str] = REPO_CACHE_DIR
     osm_force_refresh: bool = False  #  True  #
-
-
-def _required_columns() -> List[str]:
-    return ["count", "city", "state", "category", "origin", "destination"]
-
-
-def load_od_pairs(csv_path: str) -> pd.DataFrame:
-    df = pd.read_csv(csv_path)
-    missing = [c for c in _required_columns() if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing required columns in calibration CSV: {missing}")
-
-    out = df.copy()
-    out["pair_id"] = out["count"].astype(int)
-    out["origin_geom"] = out["origin"].apply(wkt.loads)
-    out["destination_geom"] = out["destination"].apply(wkt.loads)
-
-    bad_origin = out["origin_geom"].apply(lambda g: not isinstance(g, Point))
-    bad_dest = out["destination_geom"].apply(lambda g: not isinstance(g, Point))
-    if bool(bad_origin.any()) or bool(bad_dest.any()):
-        raise ValueError("Origin and destination WKT must parse to POINT geometries.")
-
-    out = out.sort_values("pair_id").reset_index(drop=True)
-    return out
-
-
-def build_od_points_gdf(od_pairs: pd.DataFrame) -> gpd.GeoDataFrame:
-    rows: List[Dict[str, Any]] = []
-    for _, r in od_pairs.iterrows():
-        base = {
-            "pair_id": int(r["pair_id"]),
-            "count": int(r["count"]),
-            "city": r["city"],
-            "state": r["state"],
-            "category": r["category"],
-            "origin": r["origin"],
-            "destination": r["destination"],
-        }
-        rows.append(
-            {
-                **base,
-                "point_role": "origin",
-                "point_wkt": r["origin"],
-                "geometry": r["origin_geom"],
-            }
-        )
-        rows.append(
-            {
-                **base,
-                "point_role": "destination",
-                "point_wkt": r["destination"],
-                "geometry": r["destination_geom"],
-            }
-        )
-    return gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
 
 
 def _h3_cell_to_polygon(cell: str) -> Polygon:
@@ -116,7 +65,9 @@ def _h3_path_distance_miles(h3_graph: nx.Graph, path_cells: Sequence[str]) -> fl
     return float(total_miles)
 
 
-def _safe_percent_delta(estimate: Optional[float], truth: Optional[float]) -> Optional[float]:
+def _safe_percent_delta(
+    estimate: Optional[float], truth: Optional[float]
+) -> Optional[float]:
     if estimate is None or truth is None:
         return None
     if not pd.notna(estimate) or not pd.notna(truth):
@@ -171,7 +122,9 @@ def _compute_shape_metrics(
     corridor_m: float,
 ) -> Dict[str, Any]:
     if corridor_m <= 0:
-        return _default_shape_metrics(status="error:bad_corridor", corridor_m=corridor_m)
+        return _default_shape_metrics(
+            status="error:bad_corridor", corridor_m=corridor_m
+        )
     if osm_route_wgs84 is None or h3_route_wgs84 is None:
         return _default_shape_metrics(status="missing_geometry", corridor_m=corridor_m)
     if len(h3_path_cells) < 2:
@@ -194,9 +147,15 @@ def _compute_shape_metrics(
         )
         geoms_metric = geoms_wgs84.to_crs(metric_crs)
 
-        osm_line_m = geoms_metric.loc[geoms_metric["kind"] == "osm_line", "geometry"].iloc[0]
-        h3_line_m = geoms_metric.loc[geoms_metric["kind"] == "h3_line", "geometry"].iloc[0]
-        h3_cells_m = geoms_metric.loc[geoms_metric["kind"] == "h3_cells", "geometry"].iloc[0]
+        osm_line_m = geoms_metric.loc[
+            geoms_metric["kind"] == "osm_line", "geometry"
+        ].iloc[0]
+        h3_line_m = geoms_metric.loc[
+            geoms_metric["kind"] == "h3_line", "geometry"
+        ].iloc[0]
+        h3_cells_m = geoms_metric.loc[
+            geoms_metric["kind"] == "h3_cells", "geometry"
+        ].iloc[0]
 
         osm_len_m = float(osm_line_m.length)
         h3_len_m = float(h3_line_m.length)
@@ -225,7 +184,9 @@ def _compute_shape_metrics(
             "shape_hausdorff_m": hausdorff_m,
         }
     except Exception as exc:
-        return _default_shape_metrics(status=f"error:{type(exc).__name__}", corridor_m=corridor_m)
+        return _default_shape_metrics(
+            status=f"error:{type(exc).__name__}", corridor_m=corridor_m
+        )
 
 
 def solve_h3_route_for_od(
@@ -238,12 +199,18 @@ def solve_h3_route_for_od(
     report_weight_attr: str,
     snap_k: int,
 ) -> Dict[str, Any]:
-    origin_cell = h3.latlng_to_cell(float(origin_wgs84.y), float(origin_wgs84.x), h3_res)
-    destination_cell = h3.latlng_to_cell(float(destination_wgs84.y), float(destination_wgs84.x), h3_res)
+    origin_cell = h3.latlng_to_cell(
+        float(origin_wgs84.y), float(origin_wgs84.x), h3_res
+    )
+    destination_cell = h3.latlng_to_cell(
+        float(destination_wgs84.y), float(destination_wgs84.x), h3_res
+    )
 
     graph_nodes: set[str] = set(h3_graph.nodes)
     origin_snap = hnetx.snap_cell_to_graph(origin_cell, graph_nodes, max_k=snap_k)
-    destination_snap = hnetx.snap_cell_to_graph(destination_cell, graph_nodes, max_k=snap_k)
+    destination_snap = hnetx.snap_cell_to_graph(
+        destination_cell, graph_nodes, max_k=snap_k
+    )
     if origin_snap is None or destination_snap is None:
         return {
             "status": "snap_failed",
@@ -293,9 +260,13 @@ def solve_h3_route_for_od(
     }
 
 
-def _to_gdf(rows: List[Dict[str, Any]], *, geometry_col: str = "geometry") -> gpd.GeoDataFrame:
+def _to_gdf(
+    rows: List[Dict[str, Any]], *, geometry_col: str = "geometry"
+) -> gpd.GeoDataFrame:
     if not rows:
-        return gpd.GeoDataFrame(columns=[geometry_col], geometry=geometry_col, crs="EPSG:4326")
+        return gpd.GeoDataFrame(
+            columns=[geometry_col], geometry=geometry_col, crs="EPSG:4326"
+        )
     return gpd.GeoDataFrame(rows, geometry=geometry_col, crs="EPSG:4326")
 
 
@@ -306,16 +277,31 @@ def _aggregate_route_hexes_to_parent_layer(
     target_res: int,
 ) -> gpd.GeoDataFrame:
     if h3_hexes_gdf.empty:
-        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
+        return gpd.GeoDataFrame(
+            columns=["geometry"], geometry="geometry", crs="EPSG:4326"
+        )
 
     source = h3_hexes_gdf.loc[h3_hexes_gdf["h3_res"] == int(source_res)].copy()
     if source.empty:
-        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
+        return gpd.GeoDataFrame(
+            columns=["geometry"], geometry="geometry", crs="EPSG:4326"
+        )
 
     out_frames: List[gpd.GeoDataFrame] = []
-    group_cols = ["pair_id", "count", "city", "state", "category", "origin", "destination", "h3_res"]
+    group_cols = [
+        "pair_id",
+        "count",
+        "city",
+        "state",
+        "category",
+        "origin",
+        "destination",
+        "h3_res",
+    ]
     for _, grp in source.groupby(group_cols, dropna=False):
-        parent_gdf = hhier.aggregate_h3_gdf_to_parent_gdf(grp, target_res, h3_cell_col="h3_cell")
+        parent_gdf = hhier.aggregate_h3_gdf_to_parent_gdf(
+            grp, target_res, h3_cell_col="h3_cell"
+        )
         if parent_gdf.empty:
             continue
         meta = grp.iloc[0]
@@ -333,7 +319,9 @@ def _aggregate_route_hexes_to_parent_layer(
         out_frames.append(parent_gdf)
 
     if not out_frames:
-        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
+        return gpd.GeoDataFrame(
+            columns=["geometry"], geometry="geometry", crs="EPSG:4326"
+        )
 
     return gpd.GeoDataFrame(
         pd.concat(out_frames, ignore_index=True),
@@ -360,35 +348,15 @@ def _aggregate_route_hexes_to_parent_layers(
         frames.append(parent_gdf)
 
     if not frames:
-        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
+        return gpd.GeoDataFrame(
+            columns=["geometry"], geometry="geometry", crs="EPSG:4326"
+        )
 
     return gpd.GeoDataFrame(
         pd.concat(frames, ignore_index=True),
         geometry="geometry",
         crs="EPSG:4326",
     )
-
-
-def write_layers_to_gpkg(
-    gpkg_path: str,
-    *,
-    layers: Sequence[Tuple[str, gpd.GeoDataFrame]],
-) -> List[str]:
-    parent = os.path.dirname(gpkg_path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    if os.path.exists(gpkg_path):
-        os.remove(gpkg_path)
-
-    written_layers: List[str] = []
-    mode = "w"
-    for layer_name, gdf in layers:
-        if gdf.empty:
-            continue
-        gdf.to_file(gpkg_path, layer=layer_name, driver="GPKG", mode=mode)
-        written_layers.append(layer_name)
-        mode = "a"
-    return written_layers
 
 
 def run_h3_osm_calibration(
@@ -403,8 +371,12 @@ def run_h3_osm_calibration(
         config.calibration_profile_name,
         overrides=config.calibration_profile_overrides,
     )
-    h3_query_weight_attr = config.h3_weight_attr or calx.get_default_query_weight_attr(profile)
-    report_weight_attr = config.report_weight_attr or calx.get_default_report_weight_attr(profile)
+    h3_query_weight_attr = config.h3_weight_attr or calx.get_default_query_weight_attr(
+        profile
+    )
+    report_weight_attr = (
+        config.report_weight_attr or calx.get_default_report_weight_attr(profile)
+    )
 
     metrics_rows: List[Dict[str, Any]] = []
     osm_route_rows: List[Dict[str, Any]] = []
@@ -513,7 +485,9 @@ def run_h3_osm_calibration(
             h3_time_sec: Optional[float] = None
             h3_time_postcalibrated_sec: Optional[float] = None
             h3_miles: Optional[float] = None
-            shape_metrics = _default_shape_metrics(status="not_computed", corridor_m=config.shape_corridor_meters)
+            shape_metrics = _default_shape_metrics(
+                status="not_computed", corridor_m=config.shape_corridor_meters
+            )
             h3_graph_nodes: Optional[int] = None
             h3_graph_edges: Optional[int] = None
             h3_cells_count: Optional[int] = None
@@ -539,7 +513,9 @@ def run_h3_osm_calibration(
                     )
                     h3_graph_nodes = H_h3.number_of_nodes()
                     h3_graph_edges = H_h3.number_of_edges()
-                    h3_graph_directional = bool(H_h3.graph.get("directional", H_h3.is_directed()))
+                    h3_graph_directional = bool(
+                        H_h3.graph.get("directional", H_h3.is_directed())
+                    )
 
                     h3_result = solve_h3_route_for_od(
                         h3_graph=H_h3,
@@ -558,7 +534,9 @@ def run_h3_osm_calibration(
 
                     if h3_result["status"] == "ok":
                         h3_time_sec = float(h3_result["travel_time_sec"])
-                        h3_time_postcalibrated_sec = float(h3_result["travel_time_postcalibrated_sec"])
+                        h3_time_postcalibrated_sec = float(
+                            h3_result["travel_time_postcalibrated_sec"]
+                        )
                         h3_miles = float(h3_result["travel_miles"])
                         path_cells = list(h3_result["path_cells"])
                         h3_cells_count = len(path_cells)
@@ -651,17 +629,38 @@ def run_h3_osm_calibration(
                     "osm_travel_time_sec": osm_time_sec,
                     "h3_travel_time_sec": h3_time_sec,
                     "h3_travel_time_postcalibrated_sec": h3_time_postcalibrated_sec,
-                    "time_error_sec": (h3_time_sec - osm_time_sec) if h3_time_sec is not None and osm_time_sec is not None else None,
+                    "time_error_sec": (
+                        (h3_time_sec - osm_time_sec)
+                        if h3_time_sec is not None and osm_time_sec is not None
+                        else None
+                    ),
                     "time_error_pct": _safe_percent_delta(h3_time_sec, osm_time_sec),
-                    "abs_time_error": _safe_abs(_safe_percent_delta(h3_time_sec, osm_time_sec)),
-                    "time_postcalibrated_error_sec": (h3_time_postcalibrated_sec - osm_time_sec) if h3_time_postcalibrated_sec is not None and osm_time_sec is not None else None,
-                    "time_postcalibrated_error_pct": _safe_percent_delta(h3_time_postcalibrated_sec, osm_time_sec),
-                    "abs_time_postcalibrated_error": _safe_abs(_safe_percent_delta(h3_time_postcalibrated_sec, osm_time_sec)),
+                    "abs_time_error": _safe_abs(
+                        _safe_percent_delta(h3_time_sec, osm_time_sec)
+                    ),
+                    "time_postcalibrated_error_sec": (
+                        (h3_time_postcalibrated_sec - osm_time_sec)
+                        if h3_time_postcalibrated_sec is not None
+                        and osm_time_sec is not None
+                        else None
+                    ),
+                    "time_postcalibrated_error_pct": _safe_percent_delta(
+                        h3_time_postcalibrated_sec, osm_time_sec
+                    ),
+                    "abs_time_postcalibrated_error": _safe_abs(
+                        _safe_percent_delta(h3_time_postcalibrated_sec, osm_time_sec)
+                    ),
                     "osm_travel_miles": osm_miles,
                     "h3_travel_miles": h3_miles,
-                    "distance_error_miles": (h3_miles - osm_miles) if h3_miles is not None and osm_miles is not None else None,
+                    "distance_error_miles": (
+                        (h3_miles - osm_miles)
+                        if h3_miles is not None and osm_miles is not None
+                        else None
+                    ),
                     "distance_error_pct": _safe_percent_delta(h3_miles, osm_miles),
-                    "abs_dist_error": _safe_abs(_safe_percent_delta(h3_miles, osm_miles)),
+                    "abs_dist_error": _safe_abs(
+                        _safe_percent_delta(h3_miles, osm_miles)
+                    ),
                     "osm_graph_nodes": osm_graph_nodes,
                     "osm_graph_edges": osm_graph_edges,
                     "h3_graph_nodes": h3_graph_nodes,
@@ -677,7 +676,11 @@ def run_h3_osm_calibration(
                 }
             )
 
-    metrics_df = pd.DataFrame(metrics_rows).sort_values(["pair_id", "h3_res"]).reset_index(drop=True)
+    metrics_df = (
+        pd.DataFrame(metrics_rows)
+        .sort_values(["pair_id", "h3_res"])
+        .reset_index(drop=True)
+    )
     osm_routes_gdf = _to_gdf(osm_route_rows)
     h3_routes_gdf = _to_gdf(h3_route_rows)
     h3_hexes_gdf = _to_gdf(h3_hex_rows)
@@ -696,7 +699,9 @@ def run_h3_osm_calibration(
             crs="EPSG:4326",
         )
     else:
-        context_nodes_gdf = gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
+        context_nodes_gdf = gpd.GeoDataFrame(
+            columns=["geometry"], geometry="geometry", crs="EPSG:4326"
+        )
 
     if context_edges_frames:
         context_edges_gdf = gpd.GeoDataFrame(
@@ -705,7 +710,9 @@ def run_h3_osm_calibration(
             crs="EPSG:4326",
         )
     else:
-        context_edges_gdf = gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs="EPSG:4326")
+        context_edges_gdf = gpd.GeoDataFrame(
+            columns=["geometry"], geometry="geometry", crs="EPSG:4326"
+        )
 
     written_layers = write_layers_to_gpkg(
         output_gpkg_path,
@@ -742,15 +749,16 @@ def run_h3_osm_calibration(
 
 if __name__ == "__main__":
     ox.settings.use_cache = True
+    ox.settings.cache_folder = REPO_CACHE_DIR
     ox.settings.log_console = True
 
-    vintage = 10
+    vintage = 11
     output_dir = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
-    csv_file = os.path.join(os.path.dirname(__file__), "osm_scale_calibration.csv")
+    csv_file = str(repo_root() / "osm_scale_calibration.csv")
     output_gpkg = os.path.join(output_dir, f"h3_osm_calibration_vintage{vintage}.gpkg")
 
     cfg = CalibrationConfig(
-        h3_resolutions=(7, 8, 9, 10),
+        h3_resolutions=(8, 9, 10),  # 7, 8, 9, 10),
         calibration_profile_name=calx.DEFAULT_PROFILE_NAME,
         bbox_buffer_miles=5.0,
         shape_corridor_meters=100.0,

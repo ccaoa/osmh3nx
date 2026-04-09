@@ -1,0 +1,74 @@
+name: Sync Requirements with PyProject
+
+on:
+  push:
+    branches:
+      - 'dev/**'
+      - staging
+      - main
+
+jobs:
+  sync-requirements:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0  # Ensure all history is fetched to allow reset and proper branch checkout
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '>=3.11'
+
+      - name: Set Local Time Zone to Eastern Time
+        run: |
+          sudo timedatectl set-timezone America/New_York
+
+      - name: Extract dependencies from pyproject.toml to requirements.in
+        run: |
+          # Extract the dependencies section from pyproject.toml and convert to requirements.in format
+          awk '/^[[:space:]]*dependencies[[:space:]]*=[[:space:]]*\[/{f=1} f; /\]/{f=0}' pyproject.toml |
+          sed "s/\[//g; s/\]//g; s/['\"]//g; s/[[:space:]]*,[[:space:]]*\(#.*\)\?$/  \1/; s/^ *//g; s/ *$//g; /^$/d" | 
+          sed '/^[[:space:]]*dependencies[[:space:]]*=[[:space:]]*$/d' |
+          sed '/^[[:space:]]*$/d' > requirements.in
+          # Sort and ensure a new line at the end of the file
+          sort requirements.in -o requirements.in
+          sed -i -e '$a\' requirements.in
+
+      - name: Check if requirements.in is up to date
+        id: check_changes
+        run: |
+          sort requirements.in -o requirements.in
+          sed -i 's/[ \t]*$//' requirements.in
+          #  https://github.blog/changelog/2022-10-11-github-actions-deprecating-save-state-and-set-output-commands/
+          if git diff --quiet requirements.in; then
+            echo "out_of_sync=false" >> $GITHUB_OUTPUT
+          else
+            echo "out_of_sync=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit changes if requirements are out of sync
+        if: steps.check_changes.outputs.out_of_sync == 'true'
+        id: commit
+        continue-on-error: true  # Allow subsequent steps to run even if this step fails
+        run: |
+          export TZ=America/New_York
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add requirements.in
+          git commit -m "Auto-sync requirements.in with pyproject.toml on ${{ github.ref_name }} branch"
+          git push
+
+      - name: Create Pull Request for requirements update if commit failed
+        if: ${{ steps.commit.outcome == 'failure' }}
+        uses: peter-evans/create-pull-request@v6.0.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "Auto-sync requirements.in with pyproject.toml on ${{ github.ref_name }} branch"
+          title: "(Auto) Sync requirements.in with pyproject.toml on ${{ github.ref_name }}"
+          branch: auto/req-sync
+          labels: management
+          body: "Automated sync of requirements.in with pyproject.toml changes for branch `${{ github.ref_name }}` using [create-pull-request](https://github.com/peter-evans/create-pull-request) GitHub action."

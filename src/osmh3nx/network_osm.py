@@ -10,6 +10,7 @@ import geopandas as gpd
 import networkx as nx
 import osmnx as ox
 import pyproj
+from platformdirs import user_cache_dir
 from shapely.geometry import LineString, Point, Polygon, box
 from shapely import wkt as shapely_wkt
 
@@ -21,7 +22,10 @@ def miles_to_meters(miles: float) -> float:
 
 
 def _default_cache_dir() -> Path:
-    return Path(__file__).resolve().parent / "cache"
+    return Path(user_cache_dir("osmh3nx"))
+
+
+DEFAULT_CACHE_DIR: str = str(_default_cache_dir())
 
 
 def _graph_cache_key(
@@ -172,8 +176,12 @@ def build_pair_square_and_buffer(
     square_proj = box(cx - half, cy - half, cx + half, cy + half)
     buffer_proj = square_proj.buffer(miles_to_meters(buffer_miles))
 
-    square_wgs84 = gpd.GeoSeries([square_proj], crs=proj_crs).to_crs("EPSG:4326").iloc[0]
-    buffered_wgs84 = gpd.GeoSeries([buffer_proj], crs=proj_crs).to_crs("EPSG:4326").iloc[0]
+    square_wgs84 = (
+        gpd.GeoSeries([square_proj], crs=proj_crs).to_crs("EPSG:4326").iloc[0]
+    )
+    buffered_wgs84 = (
+        gpd.GeoSeries([buffer_proj], crs=proj_crs).to_crs("EPSG:4326").iloc[0]
+    )
     return square_wgs84, buffered_wgs84
 
 
@@ -181,7 +189,7 @@ def download_osm_drive_graph_for_polygon(
     polygon_wgs84: Polygon,
     *,
     simplify: bool = True,
-    cache_dir: Optional[str] = "cache",
+    cache_dir: Optional[str] = DEFAULT_CACHE_DIR,
     force_refresh: bool = False,
 ) -> nx.MultiDiGraph:
     """
@@ -195,10 +203,11 @@ def download_osm_drive_graph_for_polygon(
         network_type=network_type,
     )
     cache_path: Optional[Path] = None
+    base_cache: Optional[Path] = None
     if cache_dir is not None:
         base_cache = Path(cache_dir) if cache_dir else _default_cache_dir()
         if not base_cache.is_absolute():
-            base_cache = Path(__file__).resolve().parent / base_cache
+            base_cache = Path.cwd() / base_cache
         base_cache.mkdir(parents=True, exist_ok=True)
         cache_path = base_cache / f"osm_drive_{graph_key}.graphml"
 
@@ -220,11 +229,19 @@ def download_osm_drive_graph_for_polygon(
         G = _normalize_loaded_graph(G)
         loaded_from_cache = True
     else:
-        G = ox.graph_from_polygon(polygon_wgs84, network_type=network_type, simplify=simplify)
-        G = ox.add_edge_speeds(G)
-        G = ox.add_edge_travel_times(G)
-        if cache_path is not None:
-            ox.save_graphml(G, filepath=str(cache_path))
+        prior_cache_folder = ox.settings.cache_folder
+        try:
+            if base_cache is not None:
+                ox.settings.cache_folder = str(base_cache)
+            G = ox.graph_from_polygon(
+                polygon_wgs84, network_type=network_type, simplify=simplify
+            )
+            G = ox.add_edge_speeds(G)
+            G = ox.add_edge_travel_times(G)
+            if cache_path is not None:
+                ox.save_graphml(G, filepath=str(cache_path))
+        finally:
+            ox.settings.cache_folder = prior_cache_folder
 
     # Guardrail: if cache declares WGS84 but coordinates are not WGS84-like,
     # rebuild to avoid downstream CRS/projection corruption.
@@ -236,16 +253,26 @@ def download_osm_drive_graph_for_polygon(
         cache_invalid = True
 
     if cache_invalid:
-        G = ox.graph_from_polygon(polygon_wgs84, network_type=network_type, simplify=simplify)
-        G = ox.add_edge_speeds(G)
-        G = ox.add_edge_travel_times(G)
-        if cache_path is not None:
-            ox.save_graphml(G, filepath=str(cache_path))
+        prior_cache_folder = ox.settings.cache_folder
+        try:
+            if base_cache is not None:
+                ox.settings.cache_folder = str(base_cache)
+            G = ox.graph_from_polygon(
+                polygon_wgs84, network_type=network_type, simplify=simplify
+            )
+            G = ox.add_edge_speeds(G)
+            G = ox.add_edge_travel_times(G)
+            if cache_path is not None:
+                ox.save_graphml(G, filepath=str(cache_path))
+        finally:
+            ox.settings.cache_folder = prior_cache_folder
 
     # Ensure required attrs exist on loaded graphs from any older cache versions.
     if not all("speed_kph" in data for _, _, _, data in G.edges(keys=True, data=True)):
         G = ox.add_edge_speeds(G)
-    if not all("travel_time" in data for _, _, _, data in G.edges(keys=True, data=True)):
+    if not all(
+        "travel_time" in data for _, _, _, data in G.edges(keys=True, data=True)
+    ):
         G = ox.add_edge_travel_times(G)
     return G
 
@@ -284,7 +311,9 @@ def _select_best_parallel_edge_data(
     return best_key, dict(best_data)
 
 
-def _edge_geometry_from_data(G: nx.MultiDiGraph, u: Any, v: Any, data: Dict[str, Any]) -> LineString:
+def _edge_geometry_from_data(
+    G: nx.MultiDiGraph, u: Any, v: Any, data: Dict[str, Any]
+) -> LineString:
     geom = data.get("geometry")
     if isinstance(geom, LineString) and not geom.is_empty:
         return geom
@@ -294,7 +323,9 @@ def _edge_geometry_from_data(G: nx.MultiDiGraph, u: Any, v: Any, data: Dict[str,
     vx = G.nodes[v].get("x")
     vy = G.nodes[v].get("y")
     if ux is None or uy is None or vx is None or vy is None:
-        raise ValueError(f"Missing node coordinates for fallback edge geometry between {u} and {v}.")
+        raise ValueError(
+            f"Missing node coordinates for fallback edge geometry between {u} and {v}."
+        )
     return LineString([(float(ux), float(uy)), (float(vx), float(vy))])
 
 
@@ -355,7 +386,12 @@ def _build_route_geometry_and_metrics(
     if len(route_coords) < 2:
         raise ValueError("Route geometry could not be constructed.")
 
-    return LineString(route_coords), float(travel_time_sec), float(length_m), route_edges
+    return (
+        LineString(route_coords),
+        float(travel_time_sec),
+        float(length_m),
+        route_edges,
+    )
 
 
 def route_between_points_on_graph(
@@ -376,7 +412,9 @@ def route_between_points_on_graph(
         raise ValueError("Projected OSM graph is missing CRS.")
     to_proj = pyproj.Transformer.from_crs("EPSG:4326", crs_proj, always_xy=True)
     ox_x, ox_y = to_proj.transform(float(origin_wgs84.x), float(origin_wgs84.y))
-    dx_x, dx_y = to_proj.transform(float(destination_wgs84.x), float(destination_wgs84.y))
+    dx_x, dx_y = to_proj.transform(
+        float(destination_wgs84.x), float(destination_wgs84.y)
+    )
 
     origin_node = ox.distance.nearest_nodes(
         G_proj,
@@ -441,6 +479,10 @@ def graph_to_context_gdfs(
     if "length" in edges.columns:
         edges["length_miles"] = edges["length"].astype(float) / METERS_PER_MILE
 
-    nodes = gpd.GeoDataFrame(nodes, geometry="geometry", crs=nodes_gdf.crs).to_crs("EPSG:4326")
-    edges = gpd.GeoDataFrame(edges, geometry="geometry", crs=edges_gdf.crs).to_crs("EPSG:4326")
+    nodes = gpd.GeoDataFrame(nodes, geometry="geometry", crs=nodes_gdf.crs).to_crs(
+        "EPSG:4326"
+    )
+    edges = gpd.GeoDataFrame(edges, geometry="geometry", crs=edges_gdf.crs).to_crs(
+        "EPSG:4326"
+    )
     return nodes, edges

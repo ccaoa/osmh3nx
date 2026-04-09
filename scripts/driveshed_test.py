@@ -6,16 +6,36 @@ from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
 import geopandas as gpd
+import osmnx as ox
 import pandas as pd
 
-import calibrate as calx
-import driveshed as dshed
-import h3_osm_calibration as hcal
+try:
+    from _bootstrap import ensure_src_on_path, repo_root
+except ImportError:
+    from scripts._bootstrap import ensure_src_on_path, repo_root
+
+ensure_src_on_path()
+
+from osmh3nx import calibrate as calx
+from osmh3nx import driveshed as dshed
+from osmh3nx.data import load_od_pairs
+from osmh3nx.io import write_layers_to_gpkg
+
+REPO_CACHE_DIR: str = str(repo_root() / "cache")
 
 
 @dataclass(frozen=True)
 class DriveshedTestConfig:
-    requested_cities: Sequence[str] = ("Christiansburg", "Knoxville", "NYC", "Huntsville", "Baltimore", "Leavenworth WA", "Fargo", "Park Rapids")
+    requested_cities: Sequence[str] = (
+        "Christiansburg",
+        "Knoxville",
+        "NYC",
+        "Huntsville",
+        "Baltimore",
+        "Leavenworth WA",
+        "Fargo",
+        "Park Rapids",
+    )
     calibration_profile_name: str = calx.DEFAULT_PROFILE_NAME
     calibration_profile_overrides: Dict[str, Any] | None = None
     h3_res: int = dshed.DEFAULT_H3_RES
@@ -26,14 +46,18 @@ class DriveshedTestConfig:
     search_buffer_factor: float = dshed.DEFAULT_SEARCH_BUFFER_FACTOR
     search_min_buffer_miles: float = 2.0
     snap_max_k: int = 10
-    osm_cache_dir: str | None = "cache"
+    osm_cache_dir: str | None = REPO_CACHE_DIR
     osm_force_refresh: bool = False
 
 
 def _city_aliases() -> Dict[str, Sequence[str]]:
     return {
         "baltimore": ("Baltimore",),
-        "leavenworth wa": ("Leavenworth WA", "Leavenworth", "Leavenworth (Chelan County)"),
+        "leavenworth wa": (
+            "Leavenworth WA",
+            "Leavenworth",
+            "Leavenworth (Chelan County)",
+        ),
         "fargo": ("Fargo",),
         "park rapids": ("Park Rapids",),
         "christiansburg": ("Christiansburg",),
@@ -43,7 +67,9 @@ def _city_aliases() -> Dict[str, Sequence[str]]:
     }
 
 
-def _resolve_city_rows(od_pairs: pd.DataFrame, requested_cities: Sequence[str]) -> pd.DataFrame:
+def _resolve_city_rows(
+    od_pairs: pd.DataFrame, requested_cities: Sequence[str]
+) -> pd.DataFrame:
     rows: List[pd.Series] = []
     aliases = _city_aliases()
 
@@ -52,7 +78,9 @@ def _resolve_city_rows(od_pairs: pd.DataFrame, requested_cities: Sequence[str]) 
         city_names = aliases.get(key, (requested,))
         match = od_pairs[od_pairs["city"].isin(city_names)].copy()
         if match.empty:
-            raise ValueError(f"No calibration CSV row found for requested city '{requested}'.")
+            raise ValueError(
+                f"No calibration CSV row found for requested city '{requested}'."
+            )
 
         match = match.sort_values(["pair_id", "count"]).reset_index(drop=True)
         chosen = match.iloc[0].copy()
@@ -94,7 +122,7 @@ def run_driveshed_test(
     output_gpkg_path: str,
     config: DriveshedTestConfig,
 ) -> Dict[str, Any]:
-    od_pairs = hcal.load_od_pairs(csv_path)
+    od_pairs = load_od_pairs(csv_path)
     selected = _resolve_city_rows(od_pairs, config.requested_cities)
 
     origin_rows: List[gpd.GeoDataFrame] = []
@@ -105,7 +133,9 @@ def run_driveshed_test(
 
     for _, row in selected.iterrows():
         origin_geom = row["origin_geom"]
-        print(f"Building driveshed for {row['requested_city']} -> {row['city']}, {row['state']} (pair_id={row['pair_id']})")
+        print(
+            f"Building driveshed for {row['requested_city']} -> {row['city']}, {row['state']} (pair_id={row['pair_id']})"
+        )
         result = dshed.build_h3_driveshed_from_point(
             origin_geom,
             max_travel_minutes=config.max_travel_minutes,
@@ -159,25 +189,65 @@ def run_driveshed_test(
             )
             search_rows.append(search_gdf)
 
-        polygon_rows.append(_append_origin_metadata(result.driveshed_gdf, row=row, result=result))
-        cell_rows.append(_append_origin_metadata(result.reachable_cells_gdf, row=row, result=result))
-        edge_rows.append(_append_origin_metadata(result.reachable_edges_gdf, row=row, result=result))
+        polygon_rows.append(
+            _append_origin_metadata(result.driveshed_gdf, row=row, result=result)
+        )
+        cell_rows.append(
+            _append_origin_metadata(result.reachable_cells_gdf, row=row, result=result)
+        )
+        edge_rows.append(
+            _append_origin_metadata(result.reachable_edges_gdf, row=row, result=result)
+        )
 
     layers = [
-        ("driveshed_origin_points", gpd.GeoDataFrame(pd.concat(origin_rows, ignore_index=True), geometry="geometry", crs="EPSG:4326")),
-        ("driveshed_polygons", gpd.GeoDataFrame(pd.concat(polygon_rows, ignore_index=True), geometry="geometry", crs="EPSG:4326")),
-        ("driveshed_cells", gpd.GeoDataFrame(pd.concat(cell_rows, ignore_index=True), geometry="geometry", crs="EPSG:4326")),
-        ("driveshed_edges", gpd.GeoDataFrame(pd.concat(edge_rows, ignore_index=True), geometry="geometry", crs="EPSG:4326")),
+        (
+            "driveshed_origin_points",
+            gpd.GeoDataFrame(
+                pd.concat(origin_rows, ignore_index=True),
+                geometry="geometry",
+                crs="EPSG:4326",
+            ),
+        ),
+        (
+            "driveshed_polygons",
+            gpd.GeoDataFrame(
+                pd.concat(polygon_rows, ignore_index=True),
+                geometry="geometry",
+                crs="EPSG:4326",
+            ),
+        ),
+        (
+            "driveshed_cells",
+            gpd.GeoDataFrame(
+                pd.concat(cell_rows, ignore_index=True),
+                geometry="geometry",
+                crs="EPSG:4326",
+            ),
+        ),
+        (
+            "driveshed_edges",
+            gpd.GeoDataFrame(
+                pd.concat(edge_rows, ignore_index=True),
+                geometry="geometry",
+                crs="EPSG:4326",
+            ),
+        ),
     ]
     if search_rows:
         layers.append(
             (
                 "driveshed_search_polygons",
-                gpd.GeoDataFrame(pd.concat(search_rows, ignore_index=True), geometry="geometry", crs="EPSG:4326"),
+                gpd.GeoDataFrame(
+                    pd.concat(search_rows, ignore_index=True),
+                    geometry="geometry",
+                    crs="EPSG:4326",
+                ),
             )
         )
 
-    driveshed_cells_gdf = next(gdf for layer_name, gdf in layers if layer_name == "driveshed_cells")
+    driveshed_cells_gdf = next(
+        gdf for layer_name, gdf in layers if layer_name == "driveshed_cells"
+    )
     upsampled_cells_gdf = dshed.aggregate_driveshed_cells_to_parent_layers(
         driveshed_cells_gdf,
         target_resolutions=config.upsampled_target_resolutions,
@@ -192,7 +262,7 @@ def run_driveshed_test(
         layers.append(("driveshed_cells_upsampled", upsampled_cells_gdf))
         layers.append(("driveshed_polygons_upsampled", upsampled_polygons_gdf))
 
-    written_layers = hcal.write_layers_to_gpkg(output_gpkg_path, layers=layers)
+    written_layers = write_layers_to_gpkg(output_gpkg_path, layers=layers)
     return {
         "selected_pairs": selected,
         "written_layers": written_layers,
@@ -201,9 +271,12 @@ def run_driveshed_test(
 
 
 if __name__ == "__main__":
-    vintage = 2
+    ox.settings.use_cache = True
+    ox.settings.cache_folder = REPO_CACHE_DIR
+
+    vintage = 3
     output_dir = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
-    csv_file = os.path.join(os.path.dirname(__file__), "osm_scale_calibration.csv")
+    csv_file = str(repo_root() / "osm_scale_calibration.csv")
     output_gpkg = os.path.join(output_dir, f"h3_driveshed_vintage{vintage}.gpkg")
 
     cfg = DriveshedTestConfig()

@@ -108,10 +108,14 @@ def export_h3_graph_pickle_to_gpkg(
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Convert H3 NetworkX pickle graph to GPKG for QGIS.")
+    p = argparse.ArgumentParser(
+        description="Convert H3 NetworkX pickle graph to GPKG for QGIS."
+    )
     p.add_argument("--pkl", required=True, help="Path to .pkl H3 graph.")
     p.add_argument("--out-gpkg", required=True, help="Output .gpkg path.")
-    p.add_argument("--weight-attr", default="travel_time", help="Edge weight attribute.")
+    p.add_argument(
+        "--weight-attr", default="travel_time", help="Edge weight attribute."
+    )
     return p
 
 

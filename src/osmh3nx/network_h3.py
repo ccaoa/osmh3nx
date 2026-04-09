@@ -28,6 +28,8 @@ import geopandas as gpd
 import h3
 from h3 import LatLngMultiPoly, LatLngPoly
 
+from . import network_osm as onetx
+
 METERS_PER_MILE: float = 1609.344
 KM_PER_MILE: float = 1.609344
 SECONDS_PER_HOUR: float = 3600.0
@@ -90,7 +92,11 @@ def _resolve_speed_kph(
 def _coerce_speed_to_kph(speed_raw: Any) -> Optional[float]:
     # OSMnx edge attributes can be scalar, list, or strings like "25 mph".
     vals_kph: List[float] = []
-    candidates = speed_raw if isinstance(speed_raw, (list, tuple, np.ndarray, pd.Series)) else [speed_raw]
+    candidates = (
+        speed_raw
+        if isinstance(speed_raw, (list, tuple, np.ndarray, pd.Series))
+        else [speed_raw]
+    )
     for item in candidates:
         if item is None:
             continue
@@ -119,17 +125,12 @@ def download_osm_graph_drive(polygon_wgs84: Polygon) -> nx.MultiDiGraph:
     Download a drivable street network from OSM within the given polygon.
     Adds edge speeds and travel times.
     """
-    # network_type can be "drive", "walk", etc.
-    G = ox.graph_from_polygon(polygon_wgs84, network_type="drive", simplify=True)
-
-    # Add per-edge speed_kph and travel_time (seconds)
-    G = ox.add_edge_speeds(G)         # imputes speed_kph where missing
-    G = ox.add_edge_travel_times(G)   # sets travel_time in seconds based on length and speed_kph
-
-    return G
+    return onetx.download_osm_drive_graph_for_polygon(polygon_wgs84)
 
 
-def _ring_lnglat_to_latlng(ring_lnglat: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
+def _ring_lnglat_to_latlng(
+    ring_lnglat: Sequence[Tuple[float, float]],
+) -> List[Tuple[float, float]]:
     """
     Convert a Shapely ring coordinate sequence from (lng, lat) to (lat, lng),
     dropping the duplicated closing coordinate if present.
@@ -147,7 +148,9 @@ def _shapely_polygon_to_latlngpoly(poly: Polygon) -> LatLngPoly:
     return LatLngPoly(outer, holes)
 
 
-def _polygon_to_h3_cells(geom_wgs84: Union[Polygon, MultiPolygon], h3_res: int) -> List[str]:
+def _polygon_to_h3_cells(
+    geom_wgs84: Union[Polygon, MultiPolygon], h3_res: int
+) -> List[str]:
     """
     Convert a Shapely Polygon or MultiPolygon (EPSG:4326) to H3 cells covering it.
     """
@@ -161,6 +164,7 @@ def _polygon_to_h3_cells(geom_wgs84: Union[Polygon, MultiPolygon], h3_res: int) 
         return list(h3.h3shape_to_cells(shape, h3_res))
 
     raise TypeError(f"Expected Polygon or MultiPolygon, got {type(geom_wgs84)}")
+
 
 def build_h3_grid_gdf(polygon_wgs84: Polygon, h3_res: int) -> gpd.GeoDataFrame:
     """
@@ -388,7 +392,11 @@ def build_h3_travel_graph_from_osm(
             if preserve_way_geometry:
                 seg_cells = _cells_between_distances(line, d0, d1, c0, c1, 0)
             else:
-                seg_cells = _fallback_grid_path(c0, c1) if _grid_distance(c0, c1) not in {0, 1} else [c0, c1]
+                seg_cells = (
+                    _fallback_grid_path(c0, c1)
+                    if _grid_distance(c0, c1) not in {0, 1}
+                    else [c0, c1]
+                )
             if not seg_cells:
                 continue
             if cells[-1] == seg_cells[0]:
@@ -493,8 +501,12 @@ def build_h3_travel_graph_from_osm(
             floored_w = max(floored_w, float(min_step_time))
             floor_applied = bool(floored_w > observed_w + 1e-9)
 
-        route_w = observed_w + float(route_floor_penalty_weight) * max(0.0, floored_w - observed_w)
-        report_w = observed_w + float(report_floor_penalty_weight) * max(0.0, floored_w - observed_w)
+        route_w = observed_w + float(route_floor_penalty_weight) * max(
+            0.0, floored_w - observed_w
+        )
+        report_w = observed_w + float(report_floor_penalty_weight) * max(
+            0.0, floored_w - observed_w
+        )
 
         edge_attrs: Dict[str, Any] = {
             weight_attr: float(floored_w),
@@ -507,9 +519,17 @@ def build_h3_travel_graph_from_osm(
             "centroid_dist_m": float(dist_m),
             "centroid_dist_miles": _meters_to_miles(dist_m),
             "osm_median_speed_kph": osm_speed_median_kph,
-            "osm_median_speed_mph": _kph_to_mph(osm_speed_median_kph) if osm_speed_median_kph is not None else None,
+            "osm_median_speed_mph": (
+                _kph_to_mph(osm_speed_median_kph)
+                if osm_speed_median_kph is not None
+                else None
+            ),
             "floor_speed_kph": speed_kph_for_floor,
-            "floor_speed_mph": _kph_to_mph(speed_kph_for_floor) if speed_kph_for_floor is not None else None,
+            "floor_speed_mph": (
+                _kph_to_mph(speed_kph_for_floor)
+                if speed_kph_for_floor is not None
+                else None
+            ),
             "min_step_time_sec": min_step_time,
             "floor_applied": floor_applied,
         }
@@ -634,7 +654,9 @@ def print_h3_route_breakdown(
             dist_miles = float(dist_miles_raw)
         else:
             dist_m = ed.get("centroid_dist_m")
-            dist_miles = _meters_to_miles(float(dist_m)) if dist_m is not None else np.nan
+            dist_miles = (
+                _meters_to_miles(float(dist_m)) if dist_m is not None else np.nan
+            )
         raw_sec = ed.get("observed_step_time_raw_sec")
         route_sec = ed.get("step_time_route_sec")
         min_floor_sec = ed.get("min_step_time_sec")
@@ -645,7 +667,11 @@ def print_h3_route_breakdown(
         if osm_median_mph is None and ed.get("osm_median_speed_kph") is not None:
             osm_median_mph = _kph_to_mph(float(ed["osm_median_speed_kph"]))
         floor_applied = bool(ed.get("floor_applied", False))
-        implied_mph = (dist_miles / time_sec) * SECONDS_PER_HOUR if np.isfinite(dist_miles) and time_sec > 0 else np.nan
+        implied_mph = (
+            (dist_miles / time_sec) * SECONDS_PER_HOUR
+            if np.isfinite(dist_miles) and time_sec > 0
+            else np.nan
+        )
 
         total_time += time_sec
         if np.isfinite(dist_miles):
@@ -662,13 +688,17 @@ def print_h3_route_breakdown(
             f"{floor_applied}"
         )
 
-    avg_mph = (total_dist_miles / total_time) * SECONDS_PER_HOUR if total_time > 0 else np.nan
+    avg_mph = (
+        (total_dist_miles / total_time) * SECONDS_PER_HOUR if total_time > 0 else np.nan
+    )
     print(
         f"Route summary: steps={n_steps}, printed={steps_to_print}, "
         f"total_dist_miles={total_dist_miles:.3f}, total_time_sec={total_time:.1f}, avg_mph={avg_mph:.2f}"
     )
     if steps_to_print < n_steps:
-        print(f"Note: truncated output. Increase max_steps to view all {n_steps} steps.")
+        print(
+            f"Note: truncated output. Increase max_steps to view all {n_steps} steps."
+        )
 
 
 def _path_distance_miles(h3_graph: nx.Graph, path_cells: Sequence[str]) -> float:
@@ -700,6 +730,7 @@ def assign_nearest_target_by_h3_network(
     out_distance_col: Optional[str] = "h3_travel_miles",
     debug_route_breakdown_source_idx: Optional[int] = 1,
     debug_route_breakdown_max_steps: Optional[int] = None,
+    snap_max_k: int = 10,
 ) -> gpd.GeoDataFrame:
     """
     For each source point, find the closest target point by network travel time on the H3 graph,
@@ -738,7 +769,7 @@ def assign_nearest_target_by_h3_network(
 
     # Snap target cells into the graph
     tgt["h3_cell_graph"] = tgt["h3_cell"].apply(
-        lambda c: snap_cell_to_graph(c, graph_nodes, max_k=10)
+        lambda c: snap_cell_to_graph(c, graph_nodes, max_k=snap_max_k)
     )
 
     # Drop any targets that could not be snapped
@@ -764,7 +795,9 @@ def assign_nearest_target_by_h3_network(
     # paths[cell] = path of cells from the nearest target cell to the cell on the search graph.
     # For directed graphs we run on the reversed graph so these distances are still
     # source-to-target costs in the original graph.
-    search_graph: nx.Graph = h3_graph.reverse(copy=False) if h3_graph.is_directed() else h3_graph
+    search_graph: nx.Graph = (
+        h3_graph.reverse(copy=False) if h3_graph.is_directed() else h3_graph
+    )
     distances, raw_paths = nx.multi_source_dijkstra(
         search_graph,
         sources=list(cell_to_target_idx.keys()),
@@ -772,7 +805,9 @@ def assign_nearest_target_by_h3_network(
     )
     print("Dijkstra reached nodes:", len(distances))
     if len(distances) != h3_graph.number_of_nodes():
-        warnings.warn("Warning: Dijkstra did not reach all nodes. Graph may be disconnected.")
+        warnings.warn(
+            "Warning: Dijkstra did not reach all nodes. Graph may be disconnected."
+        )
 
     # Prepare projected versions for tie-breaking by Euclidean distance
     src_proj = src.to_crs(tie_break_project_crs)
@@ -790,16 +825,21 @@ def assign_nearest_target_by_h3_network(
         s_cell = h3.latlng_to_cell(geom.y, geom.x, h3_res)
 
         # Snap source cell into graph
-        s_cell_graph = snap_cell_to_graph(s_cell, graph_nodes, max_k=10)
+        s_cell_graph = snap_cell_to_graph(s_cell, graph_nodes, max_k=snap_max_k)
 
         # Diagnostics
         if i < 10:
             print(
-                "src", i,
-                "cell", s_cell,
-                "snapped", s_cell_graph,
-                "snapped_in_graph", (s_cell_graph in h3_graph) if s_cell_graph else None,
-                "snapped_in_paths", (s_cell_graph in raw_paths) if s_cell_graph else None,
+                "src",
+                i,
+                "cell",
+                s_cell,
+                "snapped",
+                s_cell_graph,
+                "snapped_in_graph",
+                (s_cell_graph in h3_graph) if s_cell_graph else None,
+                "snapped_in_paths",
+                (s_cell_graph in raw_paths) if s_cell_graph else None,
             )
 
         if s_cell_graph is None or s_cell_graph not in raw_paths:
@@ -818,7 +858,10 @@ def assign_nearest_target_by_h3_network(
         # Also get the path that was taken to get to the destination
         travel_time = float(distances[s_cell_graph])
         travel_miles = _path_distance_miles(h3_graph, path_cells)
-        if debug_route_breakdown_source_idx is not None and i == debug_route_breakdown_source_idx:
+        if (
+            debug_route_breakdown_source_idx is not None
+            and i == debug_route_breakdown_source_idx
+        ):
             print_h3_route_breakdown(
                 h3_graph,
                 path_cells,
@@ -856,7 +899,6 @@ def assign_nearest_target_by_h3_network(
 
     src[out_col] = chosen_ids
     return src
-
 
 
 def build_route_gdf_from_assignment(
