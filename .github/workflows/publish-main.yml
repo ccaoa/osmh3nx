@@ -1,0 +1,191 @@
+name: Publish Python Distributions
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: Package index target for this publish run.
+        required: true
+        default: testpypi
+        type: choice
+        options:
+          - testpypi
+          - pypi
+      ref:
+        description: Git ref to build from. Use a tag such as v0.1.0 for PyPI publishing.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      checkout_ref: ${{ steps.resolve.outputs.checkout_ref }}
+      publish_target: ${{ steps.resolve.outputs.publish_target }}
+      tag_name: ${{ steps.validate.outputs.tag_name }}
+      package_version: ${{ steps.validate.outputs.package_version }}
+
+    steps:
+      - name: Resolve publish target and checkout ref
+        id: resolve
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            publish_target="pypi"
+            checkout_ref="${{ github.ref }}"
+          else
+            publish_target="${{ inputs.repository }}"
+            checkout_ref="${{ inputs.ref }}"
+            if [ -z "$checkout_ref" ]; then
+              checkout_ref="${{ github.ref }}"
+            fi
+          fi
+
+          echo "publish_target=$publish_target" >> "$GITHUB_OUTPUT"
+          echo "checkout_ref=$checkout_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.checkout_ref }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate versioning rules for publish
+        id: validate
+        shell: bash
+        run: |
+          checkout_ref="${{ steps.resolve.outputs.checkout_ref }}"
+          publish_target="${{ steps.resolve.outputs.publish_target }}"
+
+          ref_name="$checkout_ref"
+          ref_name="${ref_name#refs/heads/}"
+          ref_name="${ref_name#refs/tags/}"
+
+          if [[ "$ref_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z]+)?$ ]]; then
+            tag_name="$ref_name"
+          else
+            tag_name=""
+          fi
+
+          package_version=$(python - <<'PY'
+          import pathlib
+          import tomllib
+
+          data = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
+          print(data["project"]["version"])
+          PY
+          )
+
+          echo "tag_name=$tag_name" >> "$GITHUB_OUTPUT"
+          echo "package_version=$package_version" >> "$GITHUB_OUTPUT"
+
+          if [ "$publish_target" = "pypi" ]; then
+            if [ -z "$tag_name" ]; then
+              echo "PyPI publishing requires a semantic version tag such as v0.1.0."
+              exit 1
+            fi
+
+            if [ "${tag_name#v}" != "$package_version" ]; then
+              echo "Tag $tag_name does not match pyproject.toml version $package_version."
+              exit 1
+            fi
+          fi
+
+  build:
+    needs: preflight
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine
+
+      - name: Build source and wheel distributions
+        run: python -m build
+
+      - name: Check distribution metadata
+        run: python -m twine check dist/*
+
+      - name: Upload distribution artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-testpypi:
+    if: ${{ needs.preflight.outputs.publish_target == 'testpypi' }}
+    needs:
+      - preflight
+      - build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist/
+
+  publish-pypi:
+    if: ${{ needs.preflight.outputs.publish_target == 'pypi' }}
+    needs:
+      - preflight
+      - build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
