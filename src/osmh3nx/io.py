@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import os
-from typing import List, Sequence, Tuple
+from pathlib import Path
+from typing import List, Literal, Sequence, Tuple
 
 import geopandas as gpd
+import pandas as pd
+
+TableOutputFormat = Literal["csv", "parquet"]
 
 
 def write_layers_to_gpkg(
@@ -29,3 +33,30 @@ def write_layers_to_gpkg(
         written.append(layer_name)
         mode = "a"
     return written
+
+
+def write_table_sidecar(
+    table: pd.DataFrame,
+    output_path: str | Path,
+    *,
+    table_format: TableOutputFormat = "parquet",
+) -> Path:
+    out_path = Path(output_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if table_format == "csv":
+        table.to_csv(out_path, index=False)
+        return out_path
+
+    if table_format == "parquet":
+        try:
+            table.to_parquet(out_path, index=False)
+        except ImportError as exc:
+            raise ImportError(
+                "Parquet output requires an optional parquet engine such as 'pyarrow'."
+            ) from exc
+        return out_path
+
+    raise ValueError(
+        f"Unsupported table_format '{table_format}'. Expected 'csv' or 'parquet'."
+    )
