@@ -14,11 +14,13 @@ from .batch import (
     build_calibrated_h3_graph_for_points,
     build_points_convex_hull_search_polygon,
     build_points_search_polygon,
+    dissolve_driveshed_cells_from_lookup,
     ensure_point_gdf,
     prepare_od_dataframe,
     run_batch_drivesheds,
     run_batch_nearest_target_assignment,
     run_batch_od_routes,
+    select_driveshed_cells_from_lookup,
 )
 from .driveshed import (
     DEFAULT_H3_RES,
@@ -46,12 +48,14 @@ __all__ = [
     "build_h3_driveshed_from_point",
     "create_buffered_convex_hull",
     "create_convex_hull",
+    "dissolve_driveshed_cells_from_lookup",
     "ensure_point_gdf",
     "get_calibration_profile",
     "prepare_od_dataframe",
     "run_batch_drivesheds",
     "run_batch_nearest_target_assignment",
     "run_batch_od_routes",
+    "select_driveshed_cells_from_lookup",
     "write_driveshed_result_to_gpkg",
 ]
 

@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from time import perf_counter
-from typing import Any, Dict, Sequence
+from typing import Any, Dict, Literal, Sequence
 
 import geopandas as gpd
 import osmnx as ox
@@ -21,7 +21,7 @@ from osmh3nx import calibrate as calx
 from osmh3nx import driveshed as dshed
 from osmh3nx.batch import run_batch_drivesheds
 from osmh3nx.data import load_od_pairs
-from osmh3nx.io import write_layers_to_gpkg
+from osmh3nx.io import write_layers_to_gpkg, write_table_sidecar
 
 REPO_CACHE_DIR: str = str(repo_root() / "cache")
 
@@ -40,6 +40,7 @@ class AllOriginsDriveshedConfig:
     graph_group_cols: Sequence[str] = ()
     share_graph_for_all_origins: bool = False
     shared_graph_buffer_miles: float = dshed.DEFAULT_SHARED_GRAPH_BUFFER_MILES
+    lookup_table_format: Literal["csv", "parquet"] = "csv"
     snap_max_k: int = 10
     osm_cache_dir: str | None = REPO_CACHE_DIR
     osm_force_refresh: bool = False
@@ -96,7 +97,8 @@ def run_all_origins_driveshed_test(
         f"osm_cache_dir={config.osm_cache_dir}, osm_force_refresh={config.osm_force_refresh}, "
         f"snap_max_k={config.snap_max_k}, graph_group_cols={tuple(config.graph_group_cols)}, "
         f"share_graph_for_all_origins={config.share_graph_for_all_origins}, "
-        f"shared_graph_buffer_miles={config.shared_graph_buffer_miles})"
+        f"shared_graph_buffer_miles={config.shared_graph_buffer_miles}, "
+        f"lookup_table_format={config.lookup_table_format})"
     )
     _log(
         "Starting batch driveshed build "
@@ -126,8 +128,8 @@ def run_all_origins_driveshed_test(
     )
     _log(
         "Batch driveshed build finished "
-        f"(origins={len(result.origins_gdf)}, polygons={len(result.driveshed_polygons_gdf)}, "
-        f"cells={len(result.driveshed_cells_gdf)}, edges={len(result.driveshed_edges_gdf)})"
+        f"(origins={len(result.origins_gdf)}, unique_cells={len(result.driveshed_cells_unique_gdf)}, "
+        f"lookup_rows={len(result.driveshed_cell_lookup_df)})"
     )
     status_counts = (
         result.origins_gdf["status"].fillna("missing_status").value_counts().to_dict()
@@ -139,14 +141,17 @@ def run_all_origins_driveshed_test(
     layers = [
         ("driveshed_origin_points", result.origins_gdf),
         ("driveshed_search_polygons", result.search_polygons_gdf),
-        ("driveshed_polygons", result.driveshed_polygons_gdf),
-        ("driveshed_cells", result.driveshed_cells_gdf),
-        ("driveshed_edges", result.driveshed_edges_gdf),
-        ("driveshed_cells_upsampled", result.driveshed_cells_upsampled_gdf),
-        ("driveshed_polygons_upsampled", result.driveshed_polygons_upsampled_gdf),
+        ("driveshed_cells_unique", result.driveshed_cells_unique_gdf),
     ]
     _log(f"Writing GeoPackage to {output_gpkg_path}")
     written_layers = write_layers_to_gpkg(output_gpkg_path, layers=layers)
+    lookup_path = os.path.splitext(output_gpkg_path)[0] + f"_cell_lookup.{config.lookup_table_format}"
+    _log(f"Writing lookup sidecar table to {lookup_path}")
+    write_table_sidecar(
+        result.driveshed_cell_lookup_df,
+        lookup_path,
+        table_format=config.lookup_table_format,
+    )
     elapsed_total = perf_counter() - run_started
     _log(
         f"GeoPackage write finished with {len(written_layers)} non-empty layers "
@@ -156,6 +161,7 @@ def run_all_origins_driveshed_test(
     return {
         "n_origins": int(len(origin_inputs)),
         "output_gpkg_path": output_gpkg_path,
+        "lookup_table_path": lookup_path,
         "written_layers": written_layers,
     }
 
@@ -184,4 +190,5 @@ if __name__ == "__main__":
     _log("All-origins driveshed test complete")
     _log(f"Origins processed: {run_result['n_origins']}")
     _log(f"GPKG: {run_result['output_gpkg_path']}")
+    _log(f"Lookup table: {run_result['lookup_table_path']}")
     _log(f"Layers written: {run_result['written_layers']}")

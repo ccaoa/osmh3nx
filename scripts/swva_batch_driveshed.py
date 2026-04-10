@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from time import perf_counter
-from typing import Any, Dict, Sequence
+from typing import Any, Dict, Literal, Sequence
 
 import geopandas as gpd
 import osmnx as ox
@@ -21,11 +22,12 @@ ensure_src_on_path()
 from osmh3nx import calibrate as calx
 from osmh3nx import driveshed as dshed
 from osmh3nx.batch import run_batch_drivesheds
-from osmh3nx.io import write_layers_to_gpkg
+from osmh3nx.io import write_layers_to_gpkg, write_table_sidecar
 
 REPO_CACHE_DIR: str = str(repo_root() / "cache")
 SCRIPT_CSV_PATH: str = str(repo_root() / "scripts" / "swva_ece_wls_20260315.csv")
 DEFAULT_OSM_NETWORK_EDGES_BASENAME: str = "swva_osm_drive_network_edges.geojson"
+OSM_NETWORK_EXPORT_META_SUFFIX: str = ".meta.json"
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,7 @@ class SWVABatchDriveshedConfig:
     weight_attr: str = dshed.DEFAULT_H3_WEIGHT_ATTR
     share_graph_for_all_origins: bool = True
     shared_graph_buffer_miles: float = dshed.DEFAULT_SHARED_GRAPH_BUFFER_MILES
+    lookup_table_format: Literal["csv", "parquet"] = "csv"
     search_buffer_speed_mph: float = 60.0
     search_buffer_factor: float = dshed.DEFAULT_SEARCH_BUFFER_FACTOR
     search_min_buffer_miles: float = 2.0
@@ -88,6 +91,7 @@ def run_swva_batch_driveshed_test(
         f"(profile={config.calibration_profile_name}, weight_attr={config.weight_attr}, "
         f"share_graph_for_all_origins={config.share_graph_for_all_origins}, "
         f"shared_graph_buffer_miles={config.shared_graph_buffer_miles}, "
+        f"lookup_table_format={config.lookup_table_format}, "
         f"osm_cache_dir={config.osm_cache_dir}, osm_force_refresh={config.osm_force_refresh}, "
         f"snap_max_k={config.snap_max_k})"
     )
@@ -118,8 +122,8 @@ def run_swva_batch_driveshed_test(
     )
     _log(
         "SWVA batch driveshed build finished "
-        f"(origins={len(result.origins_gdf)}, polygons={len(result.driveshed_polygons_gdf)}, "
-        f"cells={len(result.driveshed_cells_gdf)}, edges={len(result.driveshed_edges_gdf)}, "
+        f"(origins={len(result.origins_gdf)}, unique_cells={len(result.driveshed_cells_unique_gdf)}, "
+        f"lookup_rows={len(result.driveshed_cell_lookup_df)}, "
         f"shared_graphs={len(result.graph_contexts)})"
     )
     status_counts = (
@@ -138,14 +142,17 @@ def run_swva_batch_driveshed_test(
     layers = [
         ("swva_origin_points", result.origins_gdf),
         ("swva_search_polygons", result.search_polygons_gdf),
-        ("swva_driveshed_polygons", result.driveshed_polygons_gdf),
-        ("swva_driveshed_cells", result.driveshed_cells_gdf),
-        ("swva_driveshed_edges", result.driveshed_edges_gdf),
-        ("swva_driveshed_cells_upsampled", result.driveshed_cells_upsampled_gdf),
-        ("swva_driveshed_polygons_upsampled", result.driveshed_polygons_upsampled_gdf),
+        ("swva_driveshed_cells_unique", result.driveshed_cells_unique_gdf),
     ]
     _log(f"Writing GeoPackage to {output_gpkg_path}")
     written_layers = write_layers_to_gpkg(output_gpkg_path, layers=layers)
+    lookup_path = os.path.splitext(output_gpkg_path)[0] + f"_cell_lookup.{config.lookup_table_format}"
+    _log(f"Writing lookup sidecar table to {lookup_path}")
+    write_table_sidecar(
+        result.driveshed_cell_lookup_df,
+        lookup_path,
+        table_format=config.lookup_table_format,
+    )
     elapsed_total = perf_counter() - run_started
     _log(
         f"GeoPackage write finished with {len(written_layers)} non-empty layers "
@@ -155,6 +162,7 @@ def run_swva_batch_driveshed_test(
     return {
         "n_origins": int(len(origins_gdf)),
         "output_gpkg_path": output_gpkg_path,
+        "lookup_table_path": lookup_path,
         "written_layers": written_layers,
     }
 
@@ -174,6 +182,7 @@ def _write_osm_network_exports_if_missing(
         _write_osm_edges_geojson_if_missing(
             graph_group_id=graph_group_id,
             osm_graph=context.osm_graph,
+            search_polygon_wgs84=context.search_polygon_wgs84,
             output_path=output_path,
         )
         return
@@ -183,6 +192,7 @@ def _write_osm_network_exports_if_missing(
         _write_osm_edges_geojson_if_missing(
             graph_group_id=graph_group_id,
             osm_graph=context.osm_graph,
+            search_polygon_wgs84=context.search_polygon_wgs84,
             output_path=output_path,
         )
 
@@ -191,15 +201,30 @@ def _write_osm_edges_geojson_if_missing(
     *,
     graph_group_id: str,
     osm_graph: Any,
+    search_polygon_wgs84: Any,
     output_path: Path,
 ) -> None:
-    if output_path.exists():
-        _log(f"OSM edge network already exists, skipping export: {output_path}")
-        return
-
     if osm_graph is None or osm_graph.number_of_edges() == 0:
         _log(f"No OSM graph available for edge export (graph_group_id={graph_group_id})")
         return
+
+    metadata = _build_osm_export_metadata(
+        graph_group_id=graph_group_id,
+        osm_graph=osm_graph,
+        search_polygon_wgs84=search_polygon_wgs84,
+    )
+    metadata_path = _osm_export_metadata_path(output_path)
+    if output_path.exists() and metadata_path.exists():
+        existing_metadata = _read_osm_export_metadata(metadata_path)
+        if existing_metadata == metadata:
+            _log(f"OSM edge network already exists, skipping export: {output_path}")
+            return
+
+    if output_path.exists():
+        _log(
+            "Existing OSM edge export does not match the current shared graph, "
+            f"rewriting: {output_path}"
+        )
 
     _log(f"Exporting OSM edge network GeoJSON for graph_group_id={graph_group_id} to {output_path}")
     edges_gdf = ox.graph_to_gdfs(
@@ -212,13 +237,43 @@ def _write_osm_edges_geojson_if_missing(
         "EPSG:4326"
     )
     edges_gdf.to_file(output_path, driver="GeoJSON")
+    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+
+def _osm_export_metadata_path(output_path: Path) -> Path:
+    return output_path.with_name(output_path.name + OSM_NETWORK_EXPORT_META_SUFFIX)
+
+
+def _read_osm_export_metadata(metadata_path: Path) -> Dict[str, Any] | None:
+    try:
+        return json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def _build_osm_export_metadata(
+    *,
+    graph_group_id: str,
+    osm_graph: Any,
+    search_polygon_wgs84: Any,
+) -> Dict[str, Any]:
+    polygon_bounds = None
+    if search_polygon_wgs84 is not None:
+        polygon_bounds = [float(value) for value in search_polygon_wgs84.bounds]
+
+    return {
+        "graph_group_id": str(graph_group_id),
+        "osm_nodes": int(osm_graph.number_of_nodes()),
+        "osm_edges": int(osm_graph.number_of_edges()),
+        "search_polygon_bounds_wgs84": polygon_bounds,
+    }
 
 
 if __name__ == "__main__":
     ox.settings.use_cache = True
     ox.settings.cache_folder = REPO_CACHE_DIR
 
-    vintage = 0
+    vintage = 1
     output_dir = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
     output_gpkg = os.path.join(output_dir, f"swva_batch_driveshed_vintage{vintage}.gpkg")
 
@@ -236,4 +291,5 @@ if __name__ == "__main__":
     _log("SWVA batch driveshed test complete")
     _log(f"Origins processed: {run_result['n_origins']}")
     _log(f"GPKG: {run_result['output_gpkg_path']}")
+    _log(f"Lookup table: {run_result['lookup_table_path']}")
     _log(f"Layers written: {run_result['written_layers']}")

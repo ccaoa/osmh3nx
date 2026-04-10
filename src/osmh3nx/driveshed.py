@@ -28,7 +28,7 @@ DEFAULT_H3_WEIGHT_ATTR: str = calx.get_default_query_weight_attr(
 )
 DEFAULT_OSM_CACHE_DIR: str = network_osm.DEFAULT_CACHE_DIR
 DEFAULT_SEARCH_BUFFER_FACTOR: float = (
-    3.1068559611866697  # Approximately 100 km for the default 20-minute, 60 mph batch setting.
+    1.3980851825340015  # Approximately 45 km / 27.96170365068003 miles for the default 20-minute, 60 mph batch setting.
 )
 DEFAULT_SHARED_GRAPH_BUFFER_MINUTES: float = 20.0
 DEFAULT_SHARED_GRAPH_BUFFER_SPEED_MPH: float = 60.0
@@ -130,7 +130,7 @@ def estimate_driveshed_buffer_miles(
     if min_buffer_miles < 0:
         raise ValueError("min_buffer_miles must be >= 0.")
 
-    travel_hours = float(max_travel_minutes) / SECONDS_PER_MINUTE / 60.0
+    travel_hours = float(max_travel_minutes) / SECONDS_PER_MINUTE
     estimate = travel_hours * float(buffer_speed_mph) * float(buffer_factor)
     return float(max(float(min_buffer_miles), estimate))
 
