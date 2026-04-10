@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from time import perf_counter
@@ -24,6 +25,7 @@ from osmh3nx.io import write_layers_to_gpkg
 
 REPO_CACHE_DIR: str = str(repo_root() / "cache")
 SCRIPT_CSV_PATH: str = str(repo_root() / "scripts" / "swva_ece_wls_20260315.csv")
+DEFAULT_OSM_NETWORK_EDGES_BASENAME: str = "swva_osm_drive_network_edges.geojson"
 
 
 @dataclass(frozen=True)
@@ -126,6 +128,12 @@ def run_swva_batch_driveshed_test(
         else {}
     )
     _log(f"Origin status counts: {status_counts}")
+    output_dir = Path(output_gpkg_path).expanduser().resolve().parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _write_osm_network_exports_if_missing(
+        graph_contexts=result.graph_contexts,
+        output_dir=output_dir,
+    )
 
     layers = [
         ("swva_origin_points", result.origins_gdf),
@@ -149,6 +157,61 @@ def run_swva_batch_driveshed_test(
         "output_gpkg_path": output_gpkg_path,
         "written_layers": written_layers,
     }
+
+
+def _write_osm_network_exports_if_missing(
+    *,
+    graph_contexts: Dict[str, Any],
+    output_dir: Path,
+) -> None:
+    if not graph_contexts:
+        _log("No graph contexts available for OSM network export")
+        return
+
+    if len(graph_contexts) == 1:
+        graph_group_id, context = next(iter(graph_contexts.items()))
+        output_path = output_dir / DEFAULT_OSM_NETWORK_EDGES_BASENAME
+        _write_osm_edges_geojson_if_missing(
+            graph_group_id=graph_group_id,
+            osm_graph=context.osm_graph,
+            output_path=output_path,
+        )
+        return
+
+    for graph_group_id, context in graph_contexts.items():
+        output_path = output_dir / f"swva_osm_drive_network_{graph_group_id}_edges.geojson"
+        _write_osm_edges_geojson_if_missing(
+            graph_group_id=graph_group_id,
+            osm_graph=context.osm_graph,
+            output_path=output_path,
+        )
+
+
+def _write_osm_edges_geojson_if_missing(
+    *,
+    graph_group_id: str,
+    osm_graph: Any,
+    output_path: Path,
+) -> None:
+    if output_path.exists():
+        _log(f"OSM edge network already exists, skipping export: {output_path}")
+        return
+
+    if osm_graph is None or osm_graph.number_of_edges() == 0:
+        _log(f"No OSM graph available for edge export (graph_group_id={graph_group_id})")
+        return
+
+    _log(f"Exporting OSM edge network GeoJSON for graph_group_id={graph_group_id} to {output_path}")
+    edges_gdf = ox.graph_to_gdfs(
+        osm_graph,
+        nodes=False,
+        edges=True,
+        fill_edge_geometry=True,
+    ).reset_index()
+    edges_gdf = gpd.GeoDataFrame(edges_gdf, geometry="geometry", crs=edges_gdf.crs).to_crs(
+        "EPSG:4326"
+    )
+    edges_gdf.to_file(output_path, driver="GeoJSON")
 
 
 if __name__ == "__main__":
