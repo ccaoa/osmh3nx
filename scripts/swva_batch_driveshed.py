@@ -13,9 +13,9 @@ import osmnx as ox
 import pandas as pd
 
 try:
-    from _bootstrap import ensure_src_on_path, repo_root
+    from _bootstrap import default_routing_output_dir, ensure_src_on_path, repo_root
 except ImportError:
-    from scripts._bootstrap import ensure_src_on_path, repo_root
+    from scripts._bootstrap import default_routing_output_dir, ensure_src_on_path, repo_root
 
 ensure_src_on_path()
 
@@ -274,7 +274,7 @@ if __name__ == "__main__":
     ox.settings.cache_folder = REPO_CACHE_DIR
 
     vintage = 2
-    output_dir = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
+    output_dir = str(default_routing_output_dir())
     output_gpkg = os.path.join(output_dir, f"swva_batch_driveshed_vintage{vintage}.gpkg")
 
     cfg = SWVABatchDriveshedConfig()

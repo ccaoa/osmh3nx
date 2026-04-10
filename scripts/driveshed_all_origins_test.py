@@ -11,9 +11,9 @@ import osmnx as ox
 import pandas as pd
 
 try:
-    from _bootstrap import ensure_src_on_path, repo_root
+    from _bootstrap import default_routing_output_dir, ensure_src_on_path, repo_root
 except ImportError:
-    from scripts._bootstrap import ensure_src_on_path, repo_root
+    from scripts._bootstrap import default_routing_output_dir, ensure_src_on_path, repo_root
 
 ensure_src_on_path()
 
@@ -171,7 +171,7 @@ if __name__ == "__main__":
     ox.settings.cache_folder = REPO_CACHE_DIR
 
     vintage = 0
-    output_dir = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
+    output_dir = str(default_routing_output_dir())
     csv_file = str(repo_root() / "osm_scale_calibration.csv")
     output_gpkg = os.path.join(
         output_dir, f"h3_driveshed_all_origins_vintage{vintage}.gpkg"

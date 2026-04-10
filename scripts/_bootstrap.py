@@ -18,3 +18,7 @@ def ensure_src_on_path() -> Path:
     if root_str not in sys.path:
         sys.path.insert(0, root_str)
     return root
+
+
+def default_routing_output_dir() -> Path:
+    return Path.home() / "OneDrive - NACCRRA" / "Documents" / "skratch" / "routing"

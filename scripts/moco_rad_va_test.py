@@ -12,9 +12,9 @@ from shapely.geometry import Point, Polygon
 from shapely.ops import unary_union
 
 try:
-    from _bootstrap import ensure_src_on_path
+    from _bootstrap import default_routing_output_dir, ensure_src_on_path
 except ImportError:
-    from scripts._bootstrap import ensure_src_on_path
+    from scripts._bootstrap import default_routing_output_dir, ensure_src_on_path
 
 ensure_src_on_path()
 
@@ -22,7 +22,7 @@ from osmh3nx import calibrate as calx
 from osmh3nx import network_h3 as hnetx
 from osmh3nx.io import write_layers_to_gpkg
 
-OUTPUT_DIR: str = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
+OUTPUT_DIR: str = str(default_routing_output_dir())
 
 
 @dataclass(frozen=True)
