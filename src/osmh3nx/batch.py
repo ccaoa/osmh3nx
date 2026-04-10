@@ -279,6 +279,13 @@ def select_driveshed_cells_from_lookup(
     the lookup table stores origin-to-cell relationships, while the unique-cell
     layer stores geometry once per H3 cell. Filter the lookup, then join back
     to the unique geometry layer only for the cells you want to inspect.
+
+    GIS workflow:
+    1. Load the unique-cell layer and the lookup table.
+    2. Filter the lookup table to the origin(s) of interest.
+    3. Join the filtered lookup rows back to the unique-cell layer on
+       `h3_cell` and `h3_res`.
+    4. Display or export the matched cells.
     """
     if unique_cells_gdf.empty or cell_lookup_df.empty:
         return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=DEFAULT_POINT_CRS)
@@ -295,6 +302,37 @@ def select_driveshed_cells_from_lookup(
     selected_keys = lookup[key_cols].drop_duplicates().reset_index(drop=True)
     selected = unique_cells_gdf.merge(selected_keys, on=key_cols, how="inner")
     return gpd.GeoDataFrame(selected, geometry="geometry", crs=unique_cells_gdf.crs)
+
+
+def select_origins_for_driveshed_cell(
+    cell_lookup_df: pd.DataFrame,
+    *,
+    h3_cell: str,
+    h3_res: Optional[int] = None,
+    query: Optional[str] = None,
+) -> pd.DataFrame:
+    """
+    Select all origin lookup rows whose driveshed crosses a given H3 cell.
+
+    This is the inverse of origin-to-cell inspection: instead of starting from
+    one origin and asking which cells it reaches, start from one H3 cell and
+    ask which origins reach it.
+
+    GIS workflow:
+    1. Load the lookup table as a non-spatial table.
+    2. Filter the table to the target `h3_cell` and, if needed, `h3_res`.
+    3. Inspect the matching `origin_id` values directly in the table or join
+       those ids back to an origin-points layer on `origin_id`.
+    """
+    if cell_lookup_df.empty:
+        return pd.DataFrame(columns=cell_lookup_df.columns)
+
+    lookup = cell_lookup_df.loc[cell_lookup_df["h3_cell"] == str(h3_cell)].copy()
+    if h3_res is not None:
+        lookup = lookup.loc[lookup["h3_res"].astype(int) == int(h3_res)].copy()
+    if query:
+        lookup = lookup.query(query).copy()
+    return lookup.reset_index(drop=True)
 
 
 def dissolve_driveshed_cells_from_lookup(
@@ -946,8 +984,6 @@ def run_batch_drivesheds(
                 origin_h3_cell_graph=result.origin_h3_cell_graph,
                 status="ok",
                 max_travel_minutes=result.max_travel_minutes,
-                weight_attr=result.weight_attr,
-                calibration_profile_name=result.calibration_profile_name,
             )
         )
 
@@ -1180,8 +1216,6 @@ def _driveshed_cell_lookup_columns() -> List[str]:
         "is_origin_cell_graph",
         "n_child_cells_from_source",
         "max_travel_minutes",
-        "weight_attr",
-        "calibration_profile_name",
     ]
 
 
@@ -1195,8 +1229,6 @@ def _build_driveshed_cell_lookup_rows(
     origin_h3_cell_graph: str,
     status: str,
     max_travel_minutes: float,
-    weight_attr: str,
-    calibration_profile_name: str,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for _, cell_row in reachable_cells_gdf.iterrows():
@@ -1217,10 +1249,8 @@ def _build_driveshed_cell_lookup_rows(
                 "travel_time_minutes": float(cell_row["travel_time_minutes"]),
                 "path_n_cells": int(cell_row["path_n_cells"]),
                 "is_origin_cell_graph": bool(cell_row["is_origin_cell_graph"]),
-                "n_child_cells_from_source": 1,
+                "n_child_cells_from_source": None,
                 "max_travel_minutes": float(max_travel_minutes),
-                "weight_attr": str(weight_attr),
-                "calibration_profile_name": str(calibration_profile_name),
             }
         )
     return rows
@@ -1276,8 +1306,6 @@ def _build_upsampled_driveshed_cell_lookup_df(
             "origin_h3_cell",
             "origin_h3_cell_graph",
             "max_travel_minutes",
-            "weight_attr",
-            "calibration_profile_name",
         ]
         agg_df = (
             work.groupby(group_cols, dropna=False)

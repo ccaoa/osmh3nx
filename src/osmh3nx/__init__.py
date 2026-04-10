@@ -20,6 +20,7 @@ from .batch import (
     run_batch_drivesheds,
     run_batch_nearest_target_assignment,
     run_batch_od_routes,
+    select_origins_for_driveshed_cell,
     select_driveshed_cells_from_lookup,
 )
 from .driveshed import (
@@ -55,6 +56,7 @@ __all__ = [
     "run_batch_drivesheds",
     "run_batch_nearest_target_assignment",
     "run_batch_od_routes",
+    "select_origins_for_driveshed_cell",
     "select_driveshed_cells_from_lookup",
     "write_driveshed_result_to_gpkg",
 ]

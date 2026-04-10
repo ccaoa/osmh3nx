@@ -273,7 +273,7 @@ if __name__ == "__main__":
     ox.settings.use_cache = True
     ox.settings.cache_folder = REPO_CACHE_DIR
 
-    vintage = 1
+    vintage = 2
     output_dir = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
     output_gpkg = os.path.join(output_dir, f"swva_batch_driveshed_vintage{vintage}.gpkg")
 

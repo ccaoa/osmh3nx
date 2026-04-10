@@ -39,7 +39,7 @@ def write_table_sidecar(
     table: pd.DataFrame,
     output_path: str | Path,
     *,
-    table_format: TableOutputFormat = "csv",
+    table_format: TableOutputFormat = "parquet",
 ) -> Path:
     out_path = Path(output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
