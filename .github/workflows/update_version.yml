@@ -36,10 +36,31 @@ jobs:
           echo "version=$version" >> $GITHUB_ENV
           echo "version=$version" >> $GITHUB_OUTPUT
 
-      - name: Update src/osmh3nx/__version__.py
+      - name: Update package version files
         run: |
-          # Use the version from GITHUB_ENV
           echo "__version__ = \"${version}\"" > src/osmh3nx/__version__.py
+          python - <<'PY'
+          import pathlib
+          import re
+
+          version = pathlib.Path("src/osmh3nx/__version__.py").read_text(encoding="utf-8")
+          match = re.search(r'__version__\s*=\s*"([^"]+)"', version)
+          if not match:
+              raise SystemExit("Could not read version from src/osmh3nx/__version__.py")
+          resolved_version = match.group(1)
+
+          init_path = pathlib.Path("src/osmh3nx/__init__.py")
+          init_text = init_path.read_text(encoding="utf-8")
+          updated_text, count = re.subn(
+              r'__version__\s*=\s*"[^"]+"',
+              f'__version__ = "{resolved_version}"',
+              init_text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit("Could not update __version__ assignment in src/osmh3nx/__init__.py")
+          init_path.write_text(updated_text, encoding="utf-8")
+          PY
 
       - name: Prepare version for badge
         id: prep_badge
@@ -66,7 +87,7 @@ jobs:
             sed -i "s/\(version-\)[0-9]\+\.[0-9]\+\(\.[0-9]\+\)\?\(--[a-zA-Z0-9\.]\+\)\?/\1$version_formatted_for_badge/" README.md
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add src/osmh3nx/__version__.py README.md
+            git add src/osmh3nx/__version__.py src/osmh3nx/__init__.py README.md
             git commit -m "Update version to ${{ env.version }} on ${{ github.ref_name }} branch"
             git push
           else
