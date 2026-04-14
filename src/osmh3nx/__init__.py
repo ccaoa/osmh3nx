@@ -61,4 +61,4 @@ __all__ = [
     "write_driveshed_result_to_gpkg",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.1.0b1"
