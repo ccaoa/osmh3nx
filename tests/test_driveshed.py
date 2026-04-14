@@ -44,7 +44,7 @@ def test_build_driveshed_search_polygon_contains_origin() -> None:
 
 
 def test_build_h3_driveshed_from_prebuilt_graph(
-    sample_h3_cells: dict[str, str]
+    sample_h3_cells: dict[str, str],
 ) -> None:
     origin_cell = sample_h3_cells["origin_cell"]
     neighbor_cell = sample_h3_cells["neighbor_cell"]
