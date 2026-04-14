@@ -14,9 +14,13 @@ from shapely.geometry import LineString, Point, Polygon
 from shapely.ops import unary_union
 
 try:
-    from _bootstrap import ensure_src_on_path, repo_root
+    from _bootstrap import default_routing_output_dir, ensure_src_on_path, repo_root
 except ImportError:
-    from scripts._bootstrap import ensure_src_on_path, repo_root
+    from scripts._bootstrap import (
+        default_routing_output_dir,
+        ensure_src_on_path,
+        repo_root,
+    )
 
 ensure_src_on_path()
 
@@ -753,7 +757,7 @@ if __name__ == "__main__":
     ox.settings.log_console = True
 
     vintage = 11
-    output_dir = os.path.expanduser(r"~/OneDrive - NACCRRA\Documents\skratch\routing")
+    output_dir = str(default_routing_output_dir())
     csv_file = str(repo_root() / "osm_scale_calibration.csv")
     output_gpkg = os.path.join(output_dir, f"h3_osm_calibration_vintage{vintage}.gpkg")
 

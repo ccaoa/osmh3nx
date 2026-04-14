@@ -16,6 +16,7 @@ from . import calibrate as calx
 from . import driveshed as dshed
 from . import network_h3 as hnetx
 from . import network_osm as onetx
+from . import spatial as spatx
 
 DEFAULT_POINT_CRS: str = "EPSG:4326"
 DEFAULT_GRAPH_BUFFER_MILES: float = 10.0
@@ -66,11 +67,9 @@ class BatchNearestTargetResult:
 class BatchDriveshedResult:
     origins_gdf: gpd.GeoDataFrame
     search_polygons_gdf: gpd.GeoDataFrame
-    driveshed_polygons_gdf: gpd.GeoDataFrame
-    driveshed_cells_gdf: gpd.GeoDataFrame
-    driveshed_edges_gdf: gpd.GeoDataFrame
-    driveshed_cells_upsampled_gdf: gpd.GeoDataFrame
-    driveshed_polygons_upsampled_gdf: gpd.GeoDataFrame
+    driveshed_cells_unique_gdf: gpd.GeoDataFrame
+    driveshed_cell_lookup_df: pd.DataFrame
+    graph_contexts: Dict[str, H3BatchGraphContext]
 
 
 def required_od_columns() -> List[str]:
@@ -237,6 +236,171 @@ def build_points_search_polygon(
     return (
         gpd.GeoSeries([buffered_proj], crs=proj_crs).to_crs(DEFAULT_POINT_CRS).iloc[0]
     )
+
+
+def build_points_convex_hull_search_polygon(
+    points: pd.DataFrame | gpd.GeoDataFrame,
+    *,
+    geometry_col: str = "geometry",
+    lon_col: str = "lon",
+    lat_col: str = "lat",
+    input_crs: str = DEFAULT_POINT_CRS,
+    buffer_miles: float = spatx.DEFAULT_BUFFERED_CONVEX_HULL_BUFFER_MILES,
+) -> Polygon:
+    points_gdf = ensure_point_gdf(
+        points,
+        geometry_col=geometry_col,
+        lon_col=lon_col,
+        lat_col=lat_col,
+        input_crs=input_crs,
+        target_crs=DEFAULT_POINT_CRS,
+    )
+    if points_gdf.empty:
+        raise ValueError("points is empty.")
+
+    hull_gdf = spatx.create_buffered_convex_hull(
+        points_gdf,
+        buffer_miles=buffer_miles,
+    )
+    return hull_gdf.geometry.iloc[0]
+
+
+def select_driveshed_cells_from_lookup(
+    unique_cells_gdf: gpd.GeoDataFrame,
+    cell_lookup_df: pd.DataFrame,
+    *,
+    origin_ids: Optional[Sequence[Any]] = None,
+    query: Optional[str] = None,
+) -> gpd.GeoDataFrame:
+    """
+    Select unique driveshed cell geometries from a lookup table filter.
+
+    This is the geometry-preserving inverse of the normalized output model:
+    the lookup table stores origin-to-cell relationships, while the unique-cell
+    layer stores geometry once per H3 cell. Filter the lookup, then join back
+    to the unique geometry layer only for the cells you want to inspect.
+
+    GIS workflow:
+    1. Load the unique-cell layer and the lookup table.
+    2. Filter the lookup table to the origin(s) of interest.
+    3. Join the filtered lookup rows back to the unique-cell layer on
+       `h3_cell` and `h3_res`.
+    4. Display or export the matched cells.
+    """
+    if unique_cells_gdf.empty or cell_lookup_df.empty:
+        return gpd.GeoDataFrame(
+            columns=["geometry"], geometry="geometry", crs=DEFAULT_POINT_CRS
+        )
+
+    lookup = cell_lookup_df.copy()
+    if origin_ids is not None:
+        lookup = lookup.loc[lookup["origin_id"].isin(list(origin_ids))].copy()
+    if query:
+        lookup = lookup.query(query).copy()
+    if lookup.empty:
+        return gpd.GeoDataFrame(
+            columns=["geometry"], geometry="geometry", crs=unique_cells_gdf.crs
+        )
+
+    key_cols = ["h3_res", "h3_cell"]
+    selected_keys = lookup[key_cols].drop_duplicates().reset_index(drop=True)
+    selected = unique_cells_gdf.merge(selected_keys, on=key_cols, how="inner")
+    return gpd.GeoDataFrame(selected, geometry="geometry", crs=unique_cells_gdf.crs)
+
+
+def select_origins_for_driveshed_cell(
+    cell_lookup_df: pd.DataFrame,
+    *,
+    h3_cell: str,
+    h3_res: Optional[int] = None,
+    query: Optional[str] = None,
+) -> pd.DataFrame:
+    """
+    Select all origin lookup rows whose driveshed crosses a given H3 cell.
+
+    This is the inverse of origin-to-cell inspection: instead of starting from
+    one origin and asking which cells it reaches, start from one H3 cell and
+    ask which origins reach it.
+
+    GIS workflow:
+    1. Load the lookup table as a non-spatial table.
+    2. Filter the table to the target `h3_cell` and, if needed, `h3_res`.
+    3. Inspect the matching `origin_id` values directly in the table or join
+       those ids back to an origin-points layer on `origin_id`.
+    """
+    if cell_lookup_df.empty:
+        return pd.DataFrame(columns=cell_lookup_df.columns)
+
+    lookup = cell_lookup_df.loc[cell_lookup_df["h3_cell"] == str(h3_cell)].copy()
+    if h3_res is not None:
+        lookup = lookup.loc[lookup["h3_res"].astype(int) == int(h3_res)].copy()
+    if query:
+        lookup = lookup.query(query).copy()
+    return lookup.reset_index(drop=True)
+
+
+def dissolve_driveshed_cells_from_lookup(
+    unique_cells_gdf: gpd.GeoDataFrame,
+    cell_lookup_df: pd.DataFrame,
+    *,
+    origin_ids: Optional[Sequence[Any]] = None,
+    query: Optional[str] = None,
+    dissolve_cols: Optional[Sequence[str]] = None,
+) -> gpd.GeoDataFrame:
+    """
+    Rebuild ad hoc dissolved drivesheds from normalized cell storage.
+
+    Filter the lookup table down to the rows of interest, join those rows back
+    to unique cell geometry, then dissolve those cells into one polygon per
+    requested grouping. This avoids storing duplicated dissolved outputs during
+    large batch runs while keeping the visualization path available on demand.
+    """
+    if unique_cells_gdf.empty or cell_lookup_df.empty:
+        return gpd.GeoDataFrame(
+            columns=["geometry"], geometry="geometry", crs=DEFAULT_POINT_CRS
+        )
+
+    lookup = cell_lookup_df.copy()
+    if origin_ids is not None:
+        lookup = lookup.loc[lookup["origin_id"].isin(list(origin_ids))].copy()
+    if query:
+        lookup = lookup.query(query).copy()
+    if lookup.empty:
+        return gpd.GeoDataFrame(
+            columns=["geometry"], geometry="geometry", crs=unique_cells_gdf.crs
+        )
+
+    group_columns = list(dissolve_cols or [])
+    key_cols = ["h3_res", "h3_cell"]
+    merged = lookup.merge(
+        unique_cells_gdf[key_cols + ["geometry"]], on=key_cols, how="inner"
+    )
+    if merged.empty:
+        return gpd.GeoDataFrame(
+            columns=["geometry"], geometry="geometry", crs=unique_cells_gdf.crs
+        )
+
+    if not group_columns:
+        group_columns = ["h3_res"]
+
+    rows: List[Dict[str, Any]] = []
+    for group_key, group_frame in merged.groupby(
+        group_columns, dropna=False, sort=False
+    ):
+        key_tuple = group_key if isinstance(group_key, tuple) else (group_key,)
+        unique_group = group_frame.drop_duplicates(subset=key_cols)
+        group_geom = gpd.GeoSeries(unique_group["geometry"], crs=unique_cells_gdf.crs)
+        try:
+            dissolved = group_geom.union_all()
+        except AttributeError:
+            dissolved = group_geom.unary_union
+        row = {col: value for col, value in zip(group_columns, key_tuple)}
+        row["n_cells"] = int(len(unique_group))
+        row["n_lookup_rows"] = int(len(group_frame))
+        row["geometry"] = dissolved
+        rows.append(row)
+
+    return gpd.GeoDataFrame(rows, geometry="geometry", crs=unique_cells_gdf.crs)
 
 
 def build_calibrated_h3_graph_for_points(
@@ -709,6 +873,8 @@ def run_batch_drivesheds(
     origins: pd.DataFrame | gpd.GeoDataFrame,
     *,
     origin_id_col: Optional[str] = None,
+    graph_group_cols: Optional[Sequence[str]] = None,
+    share_graph_for_all_origins: bool = False,
     geometry_col: str = "geometry",
     lon_col: str = "lon",
     lat_col: str = "lat",
@@ -723,6 +889,7 @@ def run_batch_drivesheds(
     search_buffer_speed_mph: float = 60.0,
     search_buffer_factor: float = dshed.DEFAULT_SEARCH_BUFFER_FACTOR,
     search_min_buffer_miles: float = 2.0,
+    shared_graph_buffer_miles: float = dshed.DEFAULT_SHARED_GRAPH_BUFFER_MILES,
     snap_max_k: int = 10,
     upsampled_target_resolutions: Optional[Sequence[int]] = None,
     continue_on_error: bool = True,
@@ -739,20 +906,108 @@ def run_batch_drivesheds(
         origin_gdf, origin_id_col, "origin"
     )
     total_origins = int(len(origin_gdf))
+    group_columns = tuple(graph_group_cols or ())
+    use_shared_graphs = bool(group_columns) or bool(share_graph_for_all_origins)
     batch_started = perf_counter()
     _log(
         "Starting batch drivesheds "
         f"(origins={total_origins}, max_travel_minutes={max_travel_minutes}, "
-        f"h3_res={h3_res if h3_res is not None else 'profile_default'})"
+        f"h3_res={h3_res if h3_res is not None else 'profile_default'}, "
+        f"use_shared_graphs={use_shared_graphs})"
     )
 
     origin_rows: List[gpd.GeoDataFrame] = []
-    search_rows: List[gpd.GeoDataFrame] = []
-    polygon_rows: List[gpd.GeoDataFrame] = []
-    cell_rows: List[gpd.GeoDataFrame] = []
-    edge_rows: List[gpd.GeoDataFrame] = []
+    search_rows: List[Dict[str, Any]] = []
+    cell_lookup_rows: List[Dict[str, Any]] = []
+    graph_contexts: Dict[str, H3BatchGraphContext] = {}
 
-    for idx, (_, row) in enumerate(origin_gdf.iterrows(), start=1):
+    def _append_error_row(
+        row: pd.Series,
+        *,
+        row_origin: Point,
+        error_status: str,
+        error_message: str,
+        graph_group_id: Optional[str] = None,
+    ) -> None:
+        row_dict = dict(row)
+        row_dict["status"] = error_status
+        row_dict["error_message"] = error_message
+        row_dict["geometry"] = row_origin
+        if graph_group_id is not None:
+            row_dict["graph_group_id"] = graph_group_id
+        origin_rows.append(
+            gpd.GeoDataFrame(
+                [row_dict],
+                geometry="geometry",
+                crs=DEFAULT_POINT_CRS,
+            )
+        )
+
+    def _append_success_outputs(
+        row: pd.Series,
+        *,
+        origin_id: Any,
+        result: dshed.DriveshedResult,
+        graph_group_id: Optional[str] = None,
+    ) -> None:
+        base_attrs: Dict[str, Any] = {}
+        if graph_group_id is not None:
+            base_attrs["graph_group_id"] = graph_group_id
+
+        origin_rows.append(
+            gpd.GeoDataFrame(
+                [
+                    {
+                        **dict(row),
+                        **base_attrs,
+                        "status": "ok",
+                        "error_message": None,
+                        "origin_h3_cell": result.origin_h3_cell,
+                        "origin_h3_cell_graph": result.origin_h3_cell_graph,
+                        "h3_res": result.h3_res,
+                        "max_travel_minutes": result.max_travel_minutes,
+                        "weight_attr": result.weight_attr,
+                        "calibration_profile_name": result.calibration_profile_name,
+                        "geometry": result.origin_point_wgs84,
+                    }
+                ],
+                geometry="geometry",
+                crs=DEFAULT_POINT_CRS,
+            )
+        )
+
+        if result.search_polygon_wgs84 is not None and graph_group_id is None:
+            search_rows.append(
+                {
+                    "origin_id": origin_id,
+                    "status": "ok",
+                    "h3_res": result.h3_res,
+                    "max_travel_minutes": result.max_travel_minutes,
+                    "calibration_profile_name": result.calibration_profile_name,
+                    "geometry": result.search_polygon_wgs84,
+                }
+            )
+
+        cell_lookup_rows.extend(
+            _build_driveshed_cell_lookup_rows(
+                reachable_cells_gdf=result.reachable_cells_gdf,
+                origin_id=origin_id,
+                h3_res=result.h3_res,
+                graph_group_id=graph_group_id,
+                origin_h3_cell=result.origin_h3_cell,
+                origin_h3_cell_graph=result.origin_h3_cell_graph,
+                status="ok",
+                max_travel_minutes=result.max_travel_minutes,
+            )
+        )
+
+    def _run_one_origin(
+        *,
+        idx: int,
+        row: pd.Series,
+        graph_group_id: Optional[str] = None,
+        context: Optional[H3BatchGraphContext] = None,
+    ) -> None:
         origin_started = perf_counter()
         origin_id = row[resolved_origin_id_col]
         row_origin = row.geometry
@@ -770,21 +1025,39 @@ def run_batch_drivesheds(
             f"for origin_id={origin_id} ({place_text})"
         )
         try:
-            result = dshed.build_h3_driveshed_from_point(
-                row_origin,
-                max_travel_minutes=max_travel_minutes,
-                h3_res=h3_res,
-                weight_attr=weight_attr,
-                calibration_profile_name=calibration_profile_name,
-                calibration_profile_overrides=calibration_profile_overrides,
-                osm_cache_dir=osm_cache_dir,
-                osm_force_refresh=osm_force_refresh,
-                search_buffer_speed_mph=search_buffer_speed_mph,
-                search_buffer_factor=search_buffer_factor,
-                search_min_buffer_miles=search_min_buffer_miles,
-                snap_max_k=snap_max_k,
-                progress_label=f"origin_id={origin_id} ({place_text})",
-            )
+            if context is None:
+                result = dshed.build_h3_driveshed_from_point(
+                    row_origin,
+                    max_travel_minutes=max_travel_minutes,
+                    h3_res=h3_res,
+                    weight_attr=weight_attr,
+                    calibration_profile_name=calibration_profile_name,
+                    calibration_profile_overrides=calibration_profile_overrides,
+                    osm_cache_dir=osm_cache_dir,
+                    osm_force_refresh=osm_force_refresh,
+                    search_buffer_speed_mph=search_buffer_speed_mph,
+                    search_buffer_factor=search_buffer_factor,
+                    search_min_buffer_miles=search_min_buffer_miles,
+                    snap_max_k=snap_max_k,
+                    progress_label=f"origin_id={origin_id} ({place_text})",
+                )
+            else:
+                result = dshed.build_h3_driveshed_from_point(
+                    row_origin,
+                    max_travel_minutes=max_travel_minutes,
+                    h3_res=context.h3_res,
+                    weight_attr=context.weight_attr,
+                    calibration_profile_name=context.calibration_profile.name,
+                    h3_graph=context.h3_graph,
+                    G_osm=context.osm_graph,
+                    search_polygon_wgs84=context.search_polygon_wgs84,
+                    snap_max_k=snap_max_k,
+                    progress_label=(
+                        f"{graph_group_id} origin_id={origin_id} ({place_text})"
+                        if graph_group_id
+                        else f"origin_id={origin_id} ({place_text})"
+                    ),
+                )
         except Exception as exc:
             if not continue_on_error:
                 raise
@@ -794,21 +1067,14 @@ def run_batch_drivesheds(
                 f"with {type(exc).__name__}: {exc} "
                 f"(elapsed_sec={elapsed_origin:.1f})"
             )
-            origin_rows.append(
-                gpd.GeoDataFrame(
-                    [
-                        {
-                            **dict(row),
-                            "status": f"error:{type(exc).__name__}",
-                            "error_message": str(exc),
-                            "geometry": row_origin,
-                        }
-                    ],
-                    geometry="geometry",
-                    crs=DEFAULT_POINT_CRS,
-                )
+            _append_error_row(
+                row,
+                row_origin=row_origin,
+                error_status=f"error:{type(exc).__name__}",
+                error_message=str(exc),
+                graph_group_id=graph_group_id,
             )
-            continue
+            return
 
         elapsed_origin = perf_counter() - origin_started
         _log(
@@ -816,124 +1082,301 @@ def run_batch_drivesheds(
             f"(cells={len(result.reachable_cells_gdf)}, edges={len(result.reachable_edges_gdf)}, "
             f"elapsed_sec={elapsed_origin:.1f})"
         )
-
-        origin_rows.append(
-            gpd.GeoDataFrame(
-                [
-                    {
-                        **dict(row),
-                        "status": "ok",
-                        "error_message": None,
-                        "origin_h3_cell": result.origin_h3_cell,
-                        "origin_h3_cell_graph": result.origin_h3_cell_graph,
-                        "h3_res": result.h3_res,
-                        "max_travel_minutes": result.max_travel_minutes,
-                        "weight_attr": result.weight_attr,
-                        "calibration_profile_name": result.calibration_profile_name,
-                        "geometry": result.origin_point_wgs84,
-                    }
-                ],
-                geometry="geometry",
-                crs=DEFAULT_POINT_CRS,
-            )
+        _append_success_outputs(
+            row,
+            origin_id=origin_id,
+            result=result,
+            graph_group_id=graph_group_id,
         )
 
-        if result.search_polygon_wgs84 is not None:
-            search_rows.append(
-                gpd.GeoDataFrame(
-                    [
-                        {
-                            resolved_origin_id_col: origin_id,
-                            "status": "ok",
-                            "h3_res": result.h3_res,
-                            "max_travel_minutes": result.max_travel_minutes,
-                            "calibration_profile_name": result.calibration_profile_name,
-                            "geometry": result.search_polygon_wgs84,
-                        }
-                    ],
-                    geometry="geometry",
-                    crs=DEFAULT_POINT_CRS,
+    if use_shared_graphs:
+        grouped_frames = list(
+            _iter_groups(origin_gdf, group_columns if group_columns else None)
+        )
+        for group_idx, (graph_group_id, group_key, group_frame) in enumerate(
+            grouped_frames, start=1
+        ):
+            group_started = perf_counter()
+            _log(
+                f"Preparing shared driveshed graph {group_idx}/{len(grouped_frames)} "
+                f"(graph_group_id={graph_group_id}, origins={len(group_frame)})"
+            )
+            try:
+                search_polygon_wgs84 = build_points_convex_hull_search_polygon(
+                    group_frame,
+                    geometry_col="geometry",
+                    input_crs=DEFAULT_POINT_CRS,
+                    buffer_miles=shared_graph_buffer_miles,
                 )
-            )
+                context = build_calibrated_h3_graph_for_points(
+                    group_frame,
+                    graph_group_id=graph_group_id,
+                    group_key=group_key,
+                    group_columns=group_columns,
+                    geometry_col="geometry",
+                    input_crs=DEFAULT_POINT_CRS,
+                    search_polygon_wgs84=search_polygon_wgs84,
+                    h3_res=h3_res,
+                    calibration_profile_name=calibration_profile_name,
+                    calibration_profile_overrides=calibration_profile_overrides,
+                    weight_attr=weight_attr,
+                    osm_cache_dir=osm_cache_dir,
+                    osm_force_refresh=osm_force_refresh,
+                )
+            except Exception as exc:
+                if not continue_on_error:
+                    raise
+                _log(
+                    f"Shared graph preparation failed for graph_group_id={graph_group_id} "
+                    f"with {type(exc).__name__}: {exc} "
+                    f"(elapsed_sec={perf_counter() - group_started:.1f})"
+                )
+                for _, row in group_frame.iterrows():
+                    _append_error_row(
+                        row,
+                        row_origin=row.geometry,
+                        error_status=f"error:{type(exc).__name__}",
+                        error_message=str(exc),
+                        graph_group_id=graph_group_id,
+                    )
+                continue
 
-        shared_attrs = {
-            resolved_origin_id_col: origin_id,
-            "status": "ok",
-            "h3_res": result.h3_res,
-            "max_travel_minutes": result.max_travel_minutes,
-            "weight_attr": result.weight_attr,
-            "calibration_profile_name": result.calibration_profile_name,
-            "origin_h3_cell": result.origin_h3_cell,
-            "origin_h3_cell_graph": result.origin_h3_cell_graph,
-        }
-        polygon_rows.append(
-            _stamp_batch_metadata(
-                result.driveshed_gdf, base_row=dict(row), extra_attrs=shared_attrs
+            graph_contexts[graph_group_id] = context
+            search_row = _build_search_polygon_row(
+                graph_group_id=graph_group_id,
+                group_columns=tuple(group_columns),
+                group_key=group_key,
+                context=context,
             )
-        )
-        cell_rows.append(
-            _stamp_batch_metadata(
-                result.reachable_cells_gdf, base_row=dict(row), extra_attrs=shared_attrs
+            search_row["status"] = "ok"
+            search_row["max_travel_minutes"] = float(max_travel_minutes)
+            search_row["shared_graph_buffer_miles"] = float(shared_graph_buffer_miles)
+            search_rows.append(search_row)
+            _log(
+                f"Shared driveshed graph ready for graph_group_id={graph_group_id} "
+                f"(elapsed_sec={perf_counter() - group_started:.1f})"
             )
-        )
-        edge_rows.append(
-            _stamp_batch_metadata(
-                result.reachable_edges_gdf, base_row=dict(row), extra_attrs=shared_attrs
-            )
-        )
+            for _, row in group_frame.iterrows():
+                _run_one_origin(
+                    idx=int(row.name) + 1,
+                    row=row,
+                    graph_group_id=graph_group_id,
+                    context=context,
+                )
+    else:
+        for idx, (_, row) in enumerate(origin_gdf.iterrows(), start=1):
+            _run_one_origin(idx=idx, row=row)
 
     origins_out = _concat_gdfs(origin_rows)
-    search_out = _concat_gdfs(search_rows)
-    polygon_out = _concat_gdfs(polygon_rows)
-    cells_out = _concat_gdfs(cell_rows)
-    edges_out = _concat_gdfs(edge_rows)
-
-    upsampled_cells_out = gpd.GeoDataFrame(
-        columns=["geometry"], geometry="geometry", crs=DEFAULT_POINT_CRS
-    )
-    upsampled_polygons_out = gpd.GeoDataFrame(
-        columns=["geometry"], geometry="geometry", crs=DEFAULT_POINT_CRS
-    )
-    if upsampled_target_resolutions and not cells_out.empty:
+    search_out = _rows_to_gdf(search_rows, geometry_col="geometry")
+    source_lookup_df = _build_driveshed_cell_lookup_df(cell_lookup_rows)
+    driveshed_cell_lookup_df = source_lookup_df
+    if upsampled_target_resolutions and not source_lookup_df.empty:
         upsample_started = perf_counter()
         _log(
-            "Upsampling driveshed cells "
-            f"to target resolutions {tuple(upsampled_target_resolutions)}"
+            "Adding upsampled driveshed cell lookup rows "
+            f"for target resolutions {tuple(upsampled_target_resolutions)}"
         )
-        upsampled_cells_out = dshed.aggregate_driveshed_cells_to_parent_layers(
-            cells_out,
+        upsampled_lookup_df = _build_upsampled_driveshed_cell_lookup_df(
+            source_lookup_df,
             target_resolutions=upsampled_target_resolutions,
-            h3_cell_col="h3_cell",
         )
-        if not upsampled_cells_out.empty:
-            upsampled_polygons_out = dshed.dissolve_upsampled_driveshed_cells(
-                upsampled_cells_out,
-                source_cells_gdf=cells_out,
-                h3_cell_col="h3_cell",
+        if not upsampled_lookup_df.empty:
+            driveshed_cell_lookup_df = pd.concat(
+                [source_lookup_df, upsampled_lookup_df],
+                ignore_index=True,
             )
         _log(
-            f"Upsampling finished (cells={len(upsampled_cells_out)}, "
-            f"polygons={len(upsampled_polygons_out)}, "
+            f"Upsampled lookup rows ready "
+            f"(rows={len(upsampled_lookup_df)}, "
             f"elapsed_sec={perf_counter() - upsample_started:.1f})"
         )
+
+    cells_unique_out = _build_unique_driveshed_cells_gdf(
+        driveshed_cell_lookup_df,
+    )
 
     elapsed_batch = perf_counter() - batch_started
     _log(
         "Batch drivesheds complete "
-        f"(origin_rows={len(origins_out)}, polygons={len(polygon_out)}, "
-        f"cells={len(cells_out)}, edges={len(edges_out)}, "
+        f"(origin_rows={len(origins_out)}, unique_cells={len(cells_unique_out)}, "
+        f"lookup_rows={len(driveshed_cell_lookup_df)}, "
         f"elapsed_sec={elapsed_batch:.1f})"
     )
 
     return BatchDriveshedResult(
         origins_gdf=origins_out,
         search_polygons_gdf=search_out,
-        driveshed_polygons_gdf=polygon_out,
-        driveshed_cells_gdf=cells_out,
-        driveshed_edges_gdf=edges_out,
-        driveshed_cells_upsampled_gdf=upsampled_cells_out,
-        driveshed_polygons_upsampled_gdf=upsampled_polygons_out,
+        driveshed_cells_unique_gdf=cells_unique_out,
+        driveshed_cell_lookup_df=driveshed_cell_lookup_df,
+        graph_contexts=graph_contexts,
     )
+
+
+def _driveshed_cell_lookup_columns() -> List[str]:
+    return [
+        "origin_id",
+        "graph_group_id",
+        "status",
+        "h3_cell",
+        "h3_res",
+        "source_h3_res",
+        "is_upsampled",
+        "upsampled_source_h3_res",
+        "upsampled_target_h3_res",
+        "origin_h3_cell",
+        "origin_h3_cell_graph",
+        "travel_time_sec",
+        "travel_time_minutes",
+        "path_n_cells",
+        "is_origin_cell_graph",
+        "n_child_cells_from_source",
+        "max_travel_minutes",
+    ]
+
+
+def _build_driveshed_cell_lookup_rows(
+    *,
+    reachable_cells_gdf: gpd.GeoDataFrame,
+    origin_id: Any,
+    h3_res: int,
+    graph_group_id: Optional[str],
+    origin_h3_cell: str,
+    origin_h3_cell_graph: str,
+    status: str,
+    max_travel_minutes: float,
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for _, cell_row in reachable_cells_gdf.iterrows():
+        rows.append(
+            {
+                "origin_id": origin_id,
+                "graph_group_id": graph_group_id,
+                "status": status,
+                "h3_cell": str(cell_row["h3_cell"]),
+                "h3_res": int(h3_res),
+                "source_h3_res": int(h3_res),
+                "is_upsampled": False,
+                "upsampled_source_h3_res": int(h3_res),
+                "upsampled_target_h3_res": int(h3_res),
+                "origin_h3_cell": str(origin_h3_cell),
+                "origin_h3_cell_graph": str(origin_h3_cell_graph),
+                "travel_time_sec": float(cell_row["travel_time_sec"]),
+                "travel_time_minutes": float(cell_row["travel_time_minutes"]),
+                "path_n_cells": int(cell_row["path_n_cells"]),
+                "is_origin_cell_graph": bool(cell_row["is_origin_cell_graph"]),
+                "n_child_cells_from_source": None,
+                "max_travel_minutes": float(max_travel_minutes),
+            }
+        )
+    return rows
+
+
+def _build_driveshed_cell_lookup_df(
+    rows: Sequence[Mapping[str, Any]],
+) -> pd.DataFrame:
+    columns = _driveshed_cell_lookup_columns()
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    out = pd.DataFrame(list(rows))
+    for col in columns:
+        if col not in out.columns:
+            out[col] = None
+    return out.loc[:, columns].copy()
+
+
+def _build_upsampled_driveshed_cell_lookup_df(
+    source_lookup_df: pd.DataFrame,
+    *,
+    target_resolutions: Sequence[int],
+) -> pd.DataFrame:
+    if source_lookup_df.empty:
+        return _build_driveshed_cell_lookup_df([])
+
+    frames: List[pd.DataFrame] = []
+    source = source_lookup_df.loc[~source_lookup_df["is_upsampled"].astype(bool)].copy()
+    if source.empty:
+        return _build_driveshed_cell_lookup_df([])
+
+    for target_res in target_resolutions:
+        work = source.copy()
+        work = work.loc[work["h3_res"].astype(int) >= int(target_res)].copy()
+        if work.empty:
+            continue
+        work["h3_cell"] = work["h3_cell"].map(
+            lambda cell: h3.cell_to_parent(str(cell), int(target_res))
+        )
+        work["h3_res"] = int(target_res)
+        work["is_upsampled"] = True
+        work["upsampled_target_h3_res"] = int(target_res)
+        group_cols = [
+            "origin_id",
+            "graph_group_id",
+            "status",
+            "h3_cell",
+            "h3_res",
+            "source_h3_res",
+            "is_upsampled",
+            "upsampled_source_h3_res",
+            "upsampled_target_h3_res",
+            "origin_h3_cell",
+            "origin_h3_cell_graph",
+            "max_travel_minutes",
+        ]
+        agg_df = (
+            work.groupby(group_cols, dropna=False)
+            .agg(
+                travel_time_sec=("travel_time_sec", "median"),
+                travel_time_minutes=("travel_time_minutes", "median"),
+                path_n_cells=("path_n_cells", "max"),
+                is_origin_cell_graph=("is_origin_cell_graph", "any"),
+                n_child_cells_from_source=("n_child_cells_from_source", "sum"),
+            )
+            .reset_index()
+        )
+        frames.append(agg_df)
+
+    if not frames:
+        return _build_driveshed_cell_lookup_df([])
+
+    return _build_driveshed_cell_lookup_df(
+        pd.concat(frames, ignore_index=True).to_dict(orient="records")
+    )
+
+
+def _build_unique_driveshed_cells_gdf(
+    cell_lookup_df: pd.DataFrame,
+) -> gpd.GeoDataFrame:
+    if cell_lookup_df.empty:
+        return gpd.GeoDataFrame(
+            columns=["geometry"], geometry="geometry", crs=DEFAULT_POINT_CRS
+        )
+
+    group_cols = [
+        "h3_cell",
+        "h3_res",
+        "source_h3_res",
+        "is_upsampled",
+        "upsampled_source_h3_res",
+        "upsampled_target_h3_res",
+    ]
+    summary = (
+        cell_lookup_df.groupby(group_cols, dropna=False)
+        .agg(
+            n_origin_matches=("origin_id", "nunique"),
+            n_lookup_rows=("origin_id", "size"),
+            n_graph_groups=("graph_group_id", "nunique"),
+            min_travel_time_sec=("travel_time_sec", "min"),
+            median_travel_time_sec=("travel_time_sec", "median"),
+            max_travel_time_sec=("travel_time_sec", "max"),
+            min_travel_time_minutes=("travel_time_minutes", "min"),
+            median_travel_time_minutes=("travel_time_minutes", "median"),
+            max_travel_time_minutes=("travel_time_minutes", "max"),
+        )
+        .reset_index()
+    )
+    summary["geometry"] = summary["h3_cell"].map(_build_h3_cell_polygon)
+    return gpd.GeoDataFrame(summary, geometry="geometry", crs=DEFAULT_POINT_CRS)
 
 
 def _coerce_point_value(value: Any) -> Point:
