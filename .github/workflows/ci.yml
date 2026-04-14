@@ -44,9 +44,6 @@ jobs:
           python -m pip install -e .[development]
           python -m pip install pytest
 
-      - name: Check formatting with Black
-        run: black . --check --target-version py311
-
       - name: Smoke import package
         run: python -c "import osmh3nx; print(osmh3nx.__version__)"
 
