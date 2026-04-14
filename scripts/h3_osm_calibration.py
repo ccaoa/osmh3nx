@@ -16,7 +16,11 @@ from shapely.ops import unary_union
 try:
     from _bootstrap import default_routing_output_dir, ensure_src_on_path, repo_root
 except ImportError:
-    from scripts._bootstrap import default_routing_output_dir, ensure_src_on_path, repo_root
+    from scripts._bootstrap import (
+        default_routing_output_dir,
+        ensure_src_on_path,
+        repo_root,
+    )
 
 ensure_src_on_path()
 

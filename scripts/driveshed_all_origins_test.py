@@ -13,7 +13,11 @@ import pandas as pd
 try:
     from _bootstrap import default_routing_output_dir, ensure_src_on_path, repo_root
 except ImportError:
-    from scripts._bootstrap import default_routing_output_dir, ensure_src_on_path, repo_root
+    from scripts._bootstrap import (
+        default_routing_output_dir,
+        ensure_src_on_path,
+        repo_root,
+    )
 
 ensure_src_on_path()
 
@@ -145,7 +149,10 @@ def run_all_origins_driveshed_test(
     ]
     _log(f"Writing GeoPackage to {output_gpkg_path}")
     written_layers = write_layers_to_gpkg(output_gpkg_path, layers=layers)
-    lookup_path = os.path.splitext(output_gpkg_path)[0] + f"_cell_lookup.{config.lookup_table_format}"
+    lookup_path = (
+        os.path.splitext(output_gpkg_path)[0]
+        + f"_cell_lookup.{config.lookup_table_format}"
+    )
     _log(f"Writing lookup sidecar table to {lookup_path}")
     write_table_sidecar(
         result.driveshed_cell_lookup_df,

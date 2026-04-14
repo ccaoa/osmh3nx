@@ -288,7 +288,9 @@ def select_driveshed_cells_from_lookup(
     4. Display or export the matched cells.
     """
     if unique_cells_gdf.empty or cell_lookup_df.empty:
-        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=DEFAULT_POINT_CRS)
+        return gpd.GeoDataFrame(
+            columns=["geometry"], geometry="geometry", crs=DEFAULT_POINT_CRS
+        )
 
     lookup = cell_lookup_df.copy()
     if origin_ids is not None:
@@ -296,7 +298,9 @@ def select_driveshed_cells_from_lookup(
     if query:
         lookup = lookup.query(query).copy()
     if lookup.empty:
-        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=unique_cells_gdf.crs)
+        return gpd.GeoDataFrame(
+            columns=["geometry"], geometry="geometry", crs=unique_cells_gdf.crs
+        )
 
     key_cols = ["h3_res", "h3_cell"]
     selected_keys = lookup[key_cols].drop_duplicates().reset_index(drop=True)
@@ -352,7 +356,9 @@ def dissolve_driveshed_cells_from_lookup(
     large batch runs while keeping the visualization path available on demand.
     """
     if unique_cells_gdf.empty or cell_lookup_df.empty:
-        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=DEFAULT_POINT_CRS)
+        return gpd.GeoDataFrame(
+            columns=["geometry"], geometry="geometry", crs=DEFAULT_POINT_CRS
+        )
 
     lookup = cell_lookup_df.copy()
     if origin_ids is not None:
@@ -360,19 +366,27 @@ def dissolve_driveshed_cells_from_lookup(
     if query:
         lookup = lookup.query(query).copy()
     if lookup.empty:
-        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=unique_cells_gdf.crs)
+        return gpd.GeoDataFrame(
+            columns=["geometry"], geometry="geometry", crs=unique_cells_gdf.crs
+        )
 
     group_columns = list(dissolve_cols or [])
     key_cols = ["h3_res", "h3_cell"]
-    merged = lookup.merge(unique_cells_gdf[key_cols + ["geometry"]], on=key_cols, how="inner")
+    merged = lookup.merge(
+        unique_cells_gdf[key_cols + ["geometry"]], on=key_cols, how="inner"
+    )
     if merged.empty:
-        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=unique_cells_gdf.crs)
+        return gpd.GeoDataFrame(
+            columns=["geometry"], geometry="geometry", crs=unique_cells_gdf.crs
+        )
 
     if not group_columns:
         group_columns = ["h3_res"]
 
     rows: List[Dict[str, Any]] = []
-    for group_key, group_frame in merged.groupby(group_columns, dropna=False, sort=False):
+    for group_key, group_frame in merged.groupby(
+        group_columns, dropna=False, sort=False
+    ):
         key_tuple = group_key if isinstance(group_key, tuple) else (group_key,)
         unique_group = group_frame.drop_duplicates(subset=key_cols)
         group_geom = gpd.GeoSeries(unique_group["geometry"], crs=unique_cells_gdf.crs)
@@ -1076,7 +1090,9 @@ def run_batch_drivesheds(
         )
 
     if use_shared_graphs:
-        grouped_frames = list(_iter_groups(origin_gdf, group_columns if group_columns else None))
+        grouped_frames = list(
+            _iter_groups(origin_gdf, group_columns if group_columns else None)
+        )
         for group_idx, (graph_group_id, group_key, group_frame) in enumerate(
             grouped_frames, start=1
         ):

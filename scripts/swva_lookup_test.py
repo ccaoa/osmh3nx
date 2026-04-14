@@ -43,9 +43,11 @@ def _print_table_preview(table: pd.DataFrame, *, n: int = 10) -> None:
 
 
 def _build_qgis_wlsid_query(origin_ids: pd.Series) -> str:
-    unique_ids = [str(value) for value in origin_ids.dropna().astype(str).drop_duplicates()]
+    unique_ids = [
+        str(value) for value in origin_ids.dropna().astype(str).drop_duplicates()
+    ]
     quoted_ids = ", ".join(f"'{value}'" for value in unique_ids)
-    return f"\"id\" IN ({quoted_ids})"
+    return f'"id" IN ({quoted_ids})'
 
 
 def main() -> None:

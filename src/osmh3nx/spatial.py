@@ -7,7 +7,9 @@ from . import driveshed as dshed
 from . import network_osm as onetx
 
 GEOMETRY_COLUMN: str = "geometry"
-DEFAULT_BUFFERED_CONVEX_HULL_BUFFER_MILES: float = dshed.DEFAULT_SHARED_GRAPH_BUFFER_MILES
+DEFAULT_BUFFERED_CONVEX_HULL_BUFFER_MILES: float = (
+    dshed.DEFAULT_SHARED_GRAPH_BUFFER_MILES
+)
 
 
 def _parse_version_parts(version_text: str) -> tuple[int, int]:

@@ -15,7 +15,11 @@ import pandas as pd
 try:
     from _bootstrap import default_routing_output_dir, ensure_src_on_path, repo_root
 except ImportError:
-    from scripts._bootstrap import default_routing_output_dir, ensure_src_on_path, repo_root
+    from scripts._bootstrap import (
+        default_routing_output_dir,
+        ensure_src_on_path,
+        repo_root,
+    )
 
 ensure_src_on_path()
 
@@ -146,7 +150,10 @@ def run_swva_batch_driveshed_test(
     ]
     _log(f"Writing GeoPackage to {output_gpkg_path}")
     written_layers = write_layers_to_gpkg(output_gpkg_path, layers=layers)
-    lookup_path = os.path.splitext(output_gpkg_path)[0] + f"_cell_lookup.{config.lookup_table_format}"
+    lookup_path = (
+        os.path.splitext(output_gpkg_path)[0]
+        + f"_cell_lookup.{config.lookup_table_format}"
+    )
     _log(f"Writing lookup sidecar table to {lookup_path}")
     write_table_sidecar(
         result.driveshed_cell_lookup_df,
@@ -188,7 +195,9 @@ def _write_osm_network_exports_if_missing(
         return
 
     for graph_group_id, context in graph_contexts.items():
-        output_path = output_dir / f"swva_osm_drive_network_{graph_group_id}_edges.geojson"
+        output_path = (
+            output_dir / f"swva_osm_drive_network_{graph_group_id}_edges.geojson"
+        )
         _write_osm_edges_geojson_if_missing(
             graph_group_id=graph_group_id,
             osm_graph=context.osm_graph,
@@ -205,7 +214,9 @@ def _write_osm_edges_geojson_if_missing(
     output_path: Path,
 ) -> None:
     if osm_graph is None or osm_graph.number_of_edges() == 0:
-        _log(f"No OSM graph available for edge export (graph_group_id={graph_group_id})")
+        _log(
+            f"No OSM graph available for edge export (graph_group_id={graph_group_id})"
+        )
         return
 
     metadata = _build_osm_export_metadata(
@@ -226,16 +237,18 @@ def _write_osm_edges_geojson_if_missing(
             f"rewriting: {output_path}"
         )
 
-    _log(f"Exporting OSM edge network GeoJSON for graph_group_id={graph_group_id} to {output_path}")
+    _log(
+        f"Exporting OSM edge network GeoJSON for graph_group_id={graph_group_id} to {output_path}"
+    )
     edges_gdf = ox.graph_to_gdfs(
         osm_graph,
         nodes=False,
         edges=True,
         fill_edge_geometry=True,
     ).reset_index()
-    edges_gdf = gpd.GeoDataFrame(edges_gdf, geometry="geometry", crs=edges_gdf.crs).to_crs(
-        "EPSG:4326"
-    )
+    edges_gdf = gpd.GeoDataFrame(
+        edges_gdf, geometry="geometry", crs=edges_gdf.crs
+    ).to_crs("EPSG:4326")
     edges_gdf.to_file(output_path, driver="GeoJSON")
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
@@ -275,7 +288,9 @@ if __name__ == "__main__":
 
     vintage = 2
     output_dir = str(default_routing_output_dir())
-    output_gpkg = os.path.join(output_dir, f"swva_batch_driveshed_vintage{vintage}.gpkg")
+    output_gpkg = os.path.join(
+        output_dir, f"swva_batch_driveshed_vintage{vintage}.gpkg"
+    )
 
     cfg = SWVABatchDriveshedConfig()
     _log("SWVA batch driveshed test starting")
