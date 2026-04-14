@@ -53,6 +53,7 @@ Issues = "https://github.com/ccaoa/osmh3nx/issues"
 development = [
     "black",
     "pip-tools",
+    "pytest",
 ]
 typecheck = [
     "pandas-stubs",
