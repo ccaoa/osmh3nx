@@ -182,7 +182,7 @@ def _build_cell_polygon(cell: str) -> Polygon:
 
 
 def _log(message: str) -> None:
-    timestamp = pd.Timestamp.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    timestamp = pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d %H:%M:%S UTC")
     print(f"[{timestamp}] {message}", flush=True)
 
 
