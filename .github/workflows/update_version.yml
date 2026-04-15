@@ -71,7 +71,20 @@ jobs:
       - name: Check current version badge in README
         id: check_readme
         run: |
-          current_badge=$(grep -oP '(?<=version-)[0-9]+\.[0-9]+(\.[0-9]+)?(--[a-zA-Z0-9\.]+)?' README.md)
+          current_badge=$(python - <<'PY'
+          import pathlib
+          import re
+
+          readme_text = pathlib.Path("README.md").read_text(encoding="utf-8")
+          match = re.search(
+              r'https://img\.shields\.io/badge/version-([^-]+(?:--[A-Za-z0-9\.]+)?|[0-9A-Za-z\.]+)-D12828\.svg',
+              readme_text,
+          )
+          if not match:
+              raise SystemExit("Could not find version badge in README.md")
+          print(match.group(1))
+          PY
+          )
           echo "current_badge=$current_badge" >> $GITHUB_ENV
 
       - name: Compare versions and update files if needed
@@ -83,8 +96,23 @@ jobs:
           current_badge="${{ env.current_badge }}"
           if [ "$version_formatted_for_badge" != "$current_badge" ]; then
             export TZ=America/New_York
-            # Update the README badge with the new version
-            sed -i "s/\(version-\)[0-9]\+\.[0-9]\+\(\.[0-9]\+\)\?\(--[a-zA-Z0-9\.]\+\)\?/\1$version_formatted_for_badge/" README.md
+            python - <<'PY'
+            import pathlib
+            import re
+
+            version_formatted_for_badge = "${{ env.version_formatted_for_badge }}"
+            readme_path = pathlib.Path("README.md")
+            readme_text = readme_path.read_text(encoding="utf-8")
+            updated_text, count = re.subn(
+                r'(https://img\.shields\.io/badge/version-)([^-]+(?:--[A-Za-z0-9\.]+)?|[0-9A-Za-z\.]+)(-D12828\.svg)',
+                rf'\g<1>{version_formatted_for_badge}\g<3>',
+                readme_text,
+                count=1,
+            )
+            if count != 1:
+                raise SystemExit("Could not update version badge in README.md")
+            readme_path.write_text(updated_text, encoding="utf-8")
+            PY
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add src/osmh3nx/__version__.py src/osmh3nx/__init__.py README.md
