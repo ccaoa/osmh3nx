@@ -105,10 +105,28 @@ jobs:
               release_notes_path.write_text(fallback_message, encoding="utf-8")
               raise SystemExit(0)
 
+          def equivalent_version_headings(tag_text: str, version_text: str) -> list[str]:
+              candidates: set[str] = {tag_text, version_text}
+
+              prefixed = version_text if version_text.startswith("v") else f"v{version_text}"
+              unprefixed = version_text.removeprefix("v")
+              candidates.add(prefixed)
+              candidates.add(unprefixed)
+
+              match = re.match(r"^(\d+)\.(\d+)\.(\d+)(.*)$", unprefixed)
+              if match:
+                  major, minor, patch, suffix = match.groups()
+                  if patch == "0":
+                      shortened = f"{major}.{minor}{suffix}"
+                      candidates.add(shortened)
+                      candidates.add(f"v{shortened}")
+
+              return [candidate for candidate in candidates if candidate]
+
           lines = text.splitlines()
           heading_patterns = [
-              re.compile(rf"^(#+)\s+\[?{re.escape(tag_name)}\]?(?:\s*[-:].*)?$"),
-              re.compile(rf"^(#+)\s+\[?{re.escape(version)}\]?(?:\s*[-:].*)?$"),
+              re.compile(rf"^(#+)\s+\[?{re.escape(candidate)}\]?(?:\s*[-:].*)?$")
+              for candidate in equivalent_version_headings(tag_name, version)
           ]
 
           start_index: int | None = None
