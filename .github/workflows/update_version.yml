@@ -1,0 +1,134 @@
+name: Sync Version and Update README Badge
+# Source version from `pyproject.toml`'s `version` variable
+
+on:
+  push:
+    branches:
+      - 'dev/**'
+      - staging
+      - main
+  workflow_dispatch:
+
+jobs:
+  update-version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set Local Time Zone to Eastern Time
+        run: |
+          sudo timedatectl set-timezone America/New_York
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+
+      - name: Read version from pyproject.toml
+        id: read_version
+        run: |
+          version=$(python -c "import pathlib, tomllib; data=tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8')); print(data.get('project', {}).get('version', data.get('version', '')))")
+          echo "version=$version" >> $GITHUB_ENV
+          echo "version=$version" >> $GITHUB_OUTPUT
+
+      - name: Update package version files
+        run: |
+          echo "__version__ = \"${version}\"" > src/osmh3nx/__version__.py
+          python - <<'PY'
+          import pathlib
+          import re
+
+          version = pathlib.Path("src/osmh3nx/__version__.py").read_text(encoding="utf-8")
+          match = re.search(r'__version__\s*=\s*"([^"]+)"', version)
+          if not match:
+              raise SystemExit("Could not read version from src/osmh3nx/__version__.py")
+          resolved_version = match.group(1)
+
+          init_path = pathlib.Path("src/osmh3nx/__init__.py")
+          init_text = init_path.read_text(encoding="utf-8")
+          updated_text, count = re.subn(
+              r'__version__\s*=\s*"[^"]+"',
+              f'__version__ = "{resolved_version}"',
+              init_text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit("Could not update __version__ assignment in src/osmh3nx/__init__.py")
+          init_path.write_text(updated_text, encoding="utf-8")
+          PY
+
+      - name: Prepare version for badge
+        id: prep_badge
+        run: |
+          version_formatted_for_badge=$(echo "$version" | sed 's/-/--/g')
+          echo "version_formatted_for_badge=$version_formatted_for_badge" >> $GITHUB_ENV
+
+      - name: Check current version badge in README
+        id: check_readme
+        run: |
+          current_badge=$(python - <<'PY'
+          import pathlib
+          import re
+
+          readme_text = pathlib.Path("README.md").read_text(encoding="utf-8")
+          match = re.search(
+              r'https://img\.shields\.io/badge/version-([^-]+(?:--[A-Za-z0-9\.]+)?|[0-9A-Za-z\.]+)-D12828\.svg',
+              readme_text,
+          )
+          if not match:
+              raise SystemExit("Could not find version badge in README.md")
+          print(match.group(1))
+          PY
+          )
+          echo "current_badge=$current_badge" >> $GITHUB_ENV
+
+      - name: Compare versions and update files if needed
+        id: update_version
+        continue-on-error: true  # Allow failure so we can catch it below
+        run: |
+          # Use the environment variables set earlier
+          version_formatted_for_badge="${{ env.version_formatted_for_badge }}"
+          current_badge="${{ env.current_badge }}"
+          if [ "$version_formatted_for_badge" != "$current_badge" ]; then
+            export TZ=America/New_York
+            python - <<'PY'
+            import pathlib
+            import re
+
+            version_formatted_for_badge = "${{ env.version_formatted_for_badge }}"
+            readme_path = pathlib.Path("README.md")
+            readme_text = readme_path.read_text(encoding="utf-8")
+            updated_text, count = re.subn(
+                r'(https://img\.shields\.io/badge/version-)([^-]+(?:--[A-Za-z0-9\.]+)?|[0-9A-Za-z\.]+)(-D12828\.svg)',
+                rf'\g<1>{version_formatted_for_badge}\g<3>',
+                readme_text,
+                count=1,
+            )
+            if count != 1:
+                raise SystemExit("Could not update version badge in README.md")
+            readme_path.write_text(updated_text, encoding="utf-8")
+            PY
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add src/osmh3nx/__version__.py src/osmh3nx/__init__.py README.md
+            git commit -m "Update version to ${{ env.version }} on ${{ github.ref_name }} branch"
+            git push
+          else
+            echo "Version is up to date at ${{ env.version }}"
+          fi
+
+      - name: Create Pull Request for version update if commit failed
+        if: ${{ steps.update_version.outcome == 'failure' }}
+        uses: peter-evans/create-pull-request@v6.0.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "Update version to ${{ env.version }} on ${{ github.ref_name }} branch"
+          title: "(Auto) Update version to ${{ env.version }} on ${{ github.ref_name }}"
+          branch: auto/version-update
+          labels: management
+          body: "Automated update of version and README badge. The version has been updated to ${{ env.version }} on branch ${{ github.ref_name }} using [create-pull-request](https://github.com/peter-evans/create-pull-request) GitHub action."

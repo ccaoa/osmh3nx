@@ -1,0 +1,10 @@
+geopandas
+h3
+networkx
+numpy
+osmnx
+pandas
+platformdirs
+pyproj
+scikit-learn
+shapely>=2.0

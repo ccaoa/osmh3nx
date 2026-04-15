@@ -1,0 +1,118 @@
+name: Black Formatter
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - staging
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: black-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check Black Formatting
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Black
+        run: python -m pip install --upgrade pip black
+
+      - name: Check formatting with Black
+        id: black_check
+        continue-on-error: true
+        run: black . --check --target-version py311
+
+      - name: Run Black formatter on PR source branch
+        if: ${{ steps.black_check.outcome == 'failure' && github.event.pull_request.head.repo.full_name == github.repository }}
+        run: black . --fast --target-version py311
+
+      - name: Create Pull Request into PR source branch when formatting is needed
+        if: ${{ steps.black_check.outcome == 'failure' && github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: peter-evans/create-pull-request@v6.0.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          base: ${{ github.event.pull_request.head.ref }}
+          branch: auto/black-fix/${{ github.event.pull_request.head.ref }}
+          commit-message: "Apply Black formatting automatically to ${{ github.event.pull_request.head.ref }}"
+          title: "(Auto) Apply Black formatting to ${{ github.event.pull_request.head.ref }}"
+          labels: management
+          body: "Apply Black python syntax formatting to the `${{ github.event.pull_request.head.ref }}` branch so pull requests into `main` can satisfy the Black formatting check. Automated changes by [create-pull-request](https://github.com/peter-evans/create-pull-request) GitHub action."
+
+      - name: Fail job when Black formatting is required
+        if: ${{ steps.black_check.outcome == 'failure' }}
+        run: |
+          echo "Black formatting changes are required before this pull request into main can pass."
+          exit 1
+
+  format:
+    name: Format Code with Black
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set Local Time Zone to Eastern Time
+        run: |
+          sudo timedatectl set-timezone America/New_York
+
+      - name: Install Black
+        run: python -m pip install --upgrade pip black
+
+      - name: Run Black formatter
+        run: black . --fast --target-version py311
+
+      - name: Commit changes
+        id: commit
+        continue-on-error: true
+        run: |
+          export TZ=America/New_York
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git diff --exit-code || (
+            git add .
+            git commit -m "Apply Black formatting automatically to ${{ github.ref_name }} branch"
+            git push
+          )
+
+      - name: Create Pull Request for protected branches if commit failed
+        if: ${{ steps.commit.outcome == 'failure' }}
+        uses: peter-evans/create-pull-request@v6.0.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          base: ${{ github.ref_name }}
+          branch: auto/black-fix/${{ github.ref_name }}
+          commit-message: "Apply Black formatting automatically to ${{ github.ref_name }}"
+          title: "(Auto) Apply Black formatting to ${{ github.ref_name }}"
+          labels: management
+          body: "Apply Black python syntax formatting to package code in the `${{ github.ref_name }}` branch. Automated changes by [create-pull-request](https://github.com/peter-evans/create-pull-request) GitHub action."
