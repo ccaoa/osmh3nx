@@ -1,6 +1,6 @@
 # `osmh3nx`
 
-Hexagonal [H3](https://h3geo.org/) routing, drivesheds, and scalable network analysis with [OpenStreetMap](https://osm.org/) [networks](https://github.com/gboeing/osmnx).
+Hexagonal [H3](https://h3geo.org/) routing, drivesheds, and scalable GIS network analysis with [OpenStreetMap](https://osm.org/) [networks](https://github.com/gboeing/osmnx).
 
 [//]: # (Embedding badges: https://naereen.github.io/badges/)
 [![Version](https://img.shields.io/badge/version-0.1.0b1-D12828.svg)](https://github.com/ccaoa/osmh3nx)

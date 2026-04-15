@@ -7,10 +7,11 @@ This package's releases adhere to [Semantic Versioning](https://semver.org/spec/
 [//]: # (tagging git releases https://stackoverflow.com/questions/18216991/create-a-tag-in-a-github-repository)
 * *None*
 
-## 0.1.0
-**__ Apr 2026**
+## 0.1.0b1
+**15 Apr 2026**
 
 Released with [Pull Request #2](https://github.com/ccaoa/osmh3nx/pull/2)
+* First beta prerelease for the upcoming `0.1.0` initial release.
 * Established the core `osmh3nx` package structure under [`src/`](src) with PyPI-oriented metadata, BSD 3-Clause [licensing](LICENSE), version synchronization, and release workflow scaffolding.
 * Added reusable OSM-to-H3 network construction that downloads or reuses OpenStreetMap drive graphs, enriches travel-time attributes, and builds calibrated H3 travel graphs for routing workflows.
 * Added primary analysis workflows for H3 routing, nearest-target assignment, and single-origin drivesheds, including a command-line driveshed entry point.
