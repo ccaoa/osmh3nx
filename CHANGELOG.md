@@ -7,7 +7,7 @@ This package's releases adhere to [Semantic Versioning](https://semver.org/spec/
 [//]: # (tagging git releases https://stackoverflow.com/questions/18216991/create-a-tag-in-a-github-repository)
 * *None*
 
-## 0.1.0b1
+### 0.1.0b1
 **15 Apr 2026**
 
 Released with [Pull Request #2](https://github.com/ccaoa/osmh3nx/pull/2)
