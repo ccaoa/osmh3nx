@@ -151,8 +151,14 @@ jobs:
           for line in lines[start_index + 1 :]:
               stripped = line.strip()
               next_heading = re.match(r"^(#{1,6})\s+", stripped)
-              if next_heading and len(next_heading.group(1)) <= heading_level:
+
+              # Version sections in this changelog always use ## or ###.
+              # Keep #### subsections like "Issues Closed" and "Deprecations"
+              # within the matched release notes, but stop at the next version
+              # heading so a minor release does not absorb later patch releases.
+              if next_heading and len(next_heading.group(1)) in {2, 3}:
                   break
+
               body_lines.append(line)
 
           body = "\n".join(body_lines).strip()
