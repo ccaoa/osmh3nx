@@ -4,7 +4,7 @@ Hexagonal [H3](https://h3geo.org/) routing, drivesheds, and scalable GIS network
 
 [//]: # (Embedding badges: https://naereen.github.io/badges/)
 [![Version](https://img.shields.io/badge/version-0.1.0b1-D12828.svg)](https://github.com/ccaoa/osmh3nx)
-[![Python versions](https://img.shields.io/badge/python-3.11%20%7C%203.12-E6BD29.svg)](https://www.python.org/)
+[![Python versions](https://img.shields.io/badge/python-3.10%E2%80%933.14-E6BD29.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-BSD%203--Clause-0B6E4F.svg)](LICENSE)
 [![PyPI Latest Release](https://img.shields.io/pypi/v/osmh3nx.svg)](https://pypi.org/project/osmh3nx/)
 [![PyPI Downloads](https://img.shields.io/pypi/dm/osmh3nx.svg?label=PyPI%20downloads)](https://pypi.org/project/osmh3nx/)

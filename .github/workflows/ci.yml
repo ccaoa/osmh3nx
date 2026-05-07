@@ -9,7 +9,6 @@ on:
     branches:
       - main
       - staging
-      - package  # TODO Testing; remove before next release
 
 permissions:
   contents: read
