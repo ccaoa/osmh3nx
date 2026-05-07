@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "osmh3nx"
-version = "0.1.0"
-description = "Hexagonal H3 routing, drivesheds, and scalable network analysis with OpenStreetMap networks."
+version = "0.1.0b1"
+description = "Hexagonal H3 routing, drivesheds, and scalable GIS network analysis with OpenStreetMap networks."
 readme = "README.md"
 license = "BSD-3-Clause"
 license-files = ["LICENSE"]

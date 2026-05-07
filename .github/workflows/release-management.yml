@@ -33,17 +33,22 @@ jobs:
             tag_name="${{ inputs.tag_name }}"
           fi
 
-          if [[ ! "$tag_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z]+)?$ ]]; then
-            echo "Tag name must look like v1.2.3 or v1.2.3-rc.1."
+          if [[ ! "$tag_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.]?[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "Tag name must look like v1.2.3, v1.2.3b1, v1.2.3rc1, or v1.2.3-beta."
             exit 1
           fi
 
           version="${tag_name#v}"
-          if [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)([-+].*)?$ ]]; then
+          if [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)((a|b|rc)[0-9]+|[-+].*)?$ ]]; then
             patch_segment="${BASH_REMATCH[3]}"
           else
             echo "Unable to parse semantic version from $tag_name."
             exit 1
+          fi
+
+          is_prerelease="false"
+          if [[ "$version" =~ (a[0-9]+|b[0-9]+|rc[0-9]+)$ ]] || [[ "$version" =~ -?(alpha|beta|rc)([.-]?[0-9A-Za-z]+)?$ ]]; then
+            is_prerelease="true"
           fi
 
           if [ "$patch_segment" = "0" ]; then
@@ -54,6 +59,7 @@ jobs:
 
           echo "tag_name=$tag_name" >> "$GITHUB_OUTPUT"
           echo "release_name=${tag_name}${suffix}" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$is_prerelease" >> "$GITHUB_OUTPUT"
 
       - name: Check out tagged revision
         uses: actions/checkout@v4
@@ -99,10 +105,28 @@ jobs:
               release_notes_path.write_text(fallback_message, encoding="utf-8")
               raise SystemExit(0)
 
+          def equivalent_version_headings(tag_text: str, version_text: str) -> list[str]:
+              candidates: set[str] = {tag_text, version_text}
+
+              prefixed = version_text if version_text.startswith("v") else f"v{version_text}"
+              unprefixed = version_text.removeprefix("v")
+              candidates.add(prefixed)
+              candidates.add(unprefixed)
+
+              match = re.match(r"^(\d+)\.(\d+)\.(\d+)(.*)$", unprefixed)
+              if match:
+                  major, minor, patch, suffix = match.groups()
+                  if patch == "0":
+                      shortened = f"{major}.{minor}{suffix}"
+                      candidates.add(shortened)
+                      candidates.add(f"v{shortened}")
+
+              return [candidate for candidate in candidates if candidate]
+
           lines = text.splitlines()
           heading_patterns = [
-              re.compile(rf"^(#+)\s+\[?{re.escape(tag_name)}\]?(?:\s*[-:].*)?$"),
-              re.compile(rf"^(#+)\s+\[?{re.escape(version)}\]?(?:\s*[-:].*)?$"),
+              re.compile(rf"^(#+)\s+\[?{re.escape(candidate)}\]?(?:\s*[-:].*)?$")
+              for candidate in equivalent_version_headings(tag_name, version)
           ]
 
           start_index: int | None = None
@@ -127,8 +151,14 @@ jobs:
           for line in lines[start_index + 1 :]:
               stripped = line.strip()
               next_heading = re.match(r"^(#{1,6})\s+", stripped)
-              if next_heading and len(next_heading.group(1)) <= heading_level:
+
+              # Version sections in this changelog always use ## or ###.
+              # Keep #### subsections like "Issues Closed" and "Deprecations"
+              # within the matched release notes, but stop at the next version
+              # heading so a minor release does not absorb later patch releases.
+              if next_heading and len(next_heading.group(1)) in {2, 3}:
                   break
+
               body_lines.append(line)
 
           body = "\n".join(body_lines).strip()
@@ -143,15 +173,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ steps.resolve.outputs.tag_name }}
           RELEASE_NAME: ${{ steps.resolve.outputs.release_name }}
+          IS_PRERELEASE: ${{ steps.resolve.outputs.is_prerelease }}
         shell: bash
         run: |
+          prerelease_flags=()
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            prerelease_flags+=(--prerelease)
+            prerelease_flags+=(--latest=false)
+          fi
+
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             gh release edit "$TAG_NAME" \
               --title "$RELEASE_NAME" \
-              --notes-file release_notes.md
+              --notes-file release_notes.md \
+              "${prerelease_flags[@]}"
           else
             gh release create "$TAG_NAME" \
               --title "$RELEASE_NAME" \
               --notes-file release_notes.md \
-              --verify-tag
+              --verify-tag \
+              "${prerelease_flags[@]}"
           fi

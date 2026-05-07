@@ -76,7 +76,7 @@ jobs:
           ref_name="${ref_name#refs/heads/}"
           ref_name="${ref_name#refs/tags/}"
 
-          if [[ "$ref_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z]+)?$ ]]; then
+          if [[ "$ref_name" =~ ^v[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+|([-.][0-9A-Za-z]+)+)?$ ]]; then
             tag_name="$ref_name"
           else
             tag_name=""

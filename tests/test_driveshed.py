@@ -43,7 +43,9 @@ def test_build_driveshed_search_polygon_contains_origin() -> None:
     assert polygon.contains(origin) or polygon.touches(origin)
 
 
-def test_build_h3_driveshed_from_prebuilt_graph(sample_h3_cells: dict[str, str]) -> None:
+def test_build_h3_driveshed_from_prebuilt_graph(
+    sample_h3_cells: dict[str, str],
+) -> None:
     origin_cell = sample_h3_cells["origin_cell"]
     neighbor_cell = sample_h3_cells["neighbor_cell"]
     lat, lng = h3.cell_to_latlng(origin_cell)

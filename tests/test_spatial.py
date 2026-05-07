@@ -7,7 +7,9 @@ from osmh3nx import batch as batchx
 from osmh3nx import spatial as spatx
 
 
-def test_create_convex_hull_returns_single_polygon(sample_points_gdf: gpd.GeoDataFrame) -> None:
+def test_create_convex_hull_returns_single_polygon(
+    sample_points_gdf: gpd.GeoDataFrame,
+) -> None:
     hull_gdf = spatx.create_convex_hull(sample_points_gdf)
 
     assert len(hull_gdf) == 1
@@ -16,9 +18,13 @@ def test_create_convex_hull_returns_single_polygon(sample_points_gdf: gpd.GeoDat
     assert hull_gdf.geometry.iloc[0].area > 0
 
 
-def test_create_buffered_convex_hull_grows_area(sample_points_gdf: gpd.GeoDataFrame) -> None:
+def test_create_buffered_convex_hull_grows_area(
+    sample_points_gdf: gpd.GeoDataFrame,
+) -> None:
     hull_gdf = spatx.create_convex_hull(sample_points_gdf)
-    buffered_gdf = spatx.create_buffered_convex_hull(sample_points_gdf, buffer_miles=1.0)
+    buffered_gdf = spatx.create_buffered_convex_hull(
+        sample_points_gdf, buffer_miles=1.0
+    )
 
     proj_crs = hull_gdf.estimate_utm_crs() or "EPSG:3857"
     hull_area = hull_gdf.to_crs(proj_crs).geometry.iloc[0].area
