@@ -54,6 +54,7 @@ development = [
     "black",
     "pip-tools",
     "pytest",
+    "tomli; python_version < '3.11'",
 ]
 typecheck = [
     "pandas-stubs",
