@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import pathlib
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 import osmh3nx
 from osmh3nx import __version__ as package_init_version

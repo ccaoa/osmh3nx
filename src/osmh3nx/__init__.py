@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .__version__ import __version__
 from .calibrate import (
     DEFAULT_PROFILE_NAME,
     CalibrationProfile,
@@ -33,6 +34,7 @@ from .driveshed import (
 from .spatial import create_buffered_convex_hull, create_convex_hull
 
 __all__ = [
+    "__version__",
     "DEFAULT_H3_RES",
     "DEFAULT_H3_WEIGHT_ATTR",
     "DEFAULT_PROFILE_NAME",
@@ -60,5 +62,3 @@ __all__ = [
     "select_driveshed_cells_from_lookup",
     "write_driveshed_result_to_gpkg",
 ]
-
-__version__ = "0.1.0b1"

@@ -41,25 +41,19 @@ jobs:
           echo "__version__ = \"${version}\"" > src/osmh3nx/__version__.py
           python - <<'PY'
           import pathlib
-          import re
-
-          version = pathlib.Path("src/osmh3nx/__version__.py").read_text(encoding="utf-8")
-          match = re.search(r'__version__\s*=\s*"([^"]+)"', version)
-          if not match:
-              raise SystemExit("Could not read version from src/osmh3nx/__version__.py")
-          resolved_version = match.group(1)
 
           init_path = pathlib.Path("src/osmh3nx/__init__.py")
           init_text = init_path.read_text(encoding="utf-8")
-          updated_text, count = re.subn(
-              r'__version__\s*=\s*"[^"]+"',
-              f'__version__ = "{resolved_version}"',
-              init_text,
-              count=1,
-          )
-          if count != 1:
-              raise SystemExit("Could not update __version__ assignment in src/osmh3nx/__init__.py")
-          init_path.write_text(updated_text, encoding="utf-8")
+          version_import_line = "from .__version__ import __version__"
+          if version_import_line not in init_text:
+              lines = init_text.splitlines()
+              insert_at = 0
+              if lines and lines[0].startswith("from __future__ import annotations"):
+                  insert_at = 1
+                  while insert_at < len(lines) and not lines[insert_at].strip():
+                      insert_at += 1
+              lines.insert(insert_at, version_import_line)
+              init_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
 
       - name: Prepare version for badge

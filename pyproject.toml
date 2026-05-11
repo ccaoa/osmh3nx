@@ -9,7 +9,7 @@ description = "Hexagonal H3 routing, drivesheds, and scalable GIS network analys
 readme = "README.md"
 license = "BSD-3-Clause"
 license-files = ["LICENSE"]
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 authors = [
     { name = "Alex Cooper" },
     { email = "jacooper1317@gmail.com" }
@@ -54,6 +54,7 @@ development = [
     "black",
     "pip-tools",
     "pytest",
+    "tomli; python_version < '3.11'",
 ]
 typecheck = [
     "pandas-stubs",
